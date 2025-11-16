@@ -1,0 +1,32 @@
+[
+  {
+    "name": "gestionmax-opps",
+    "path": "/home/gestionmax-aur-lien/CascadeProjects/gestionmaxopps",
+    "stack": "Payload + Next.js",
+    "services": [
+      {
+        "name": "backend",
+        "port": 3010,
+        "command": "pnpm dev:backend"
+      },
+      {
+        "name": "frontend",
+        "port": 3000,
+        "command": "pnpm dev:frontend"
+      }
+    ]
+  },
+  {
+    "name": "mon-autre-projet",
+    "path": "/home/gestionmax-aur-lien/CascadeProjects/mon-autre-projet",
+    "stack": "Node.js + React",
+    "services": [
+      {
+        "name": "api",
+        "port": 4000,
+        "command": "npm run dev"
+      }
+    ]
+  }
+]
+
