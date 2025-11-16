@@ -9,9 +9,12 @@ export function getGlobalStatus(status: SystemStatus): "healthy" | "warning" | "
   const runningCount = services.filter(Boolean).length;
   const totalCount = services.length;
 
+  // Ne pas retourner "error" si aucun service n'est en cours
+  // "error" signifie qu'il y a un problème, pas juste que tout est arrêté
   if (runningCount === totalCount) return "healthy";
   if (runningCount > 0) return "warning";
-  return "error";
+  // Si aucun service n'est en cours, c'est "warning" (pas "error")
+  return "warning";
 }
 
 /**

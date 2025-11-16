@@ -26,17 +26,18 @@ export function useCommand(
     setIsLoading(true);
     setError(null);
     try {
-      await commandFn();
+      const result = await commandFn();
       onSuccess?.();
       if (successMessage) {
         toast({
           title: successMessage.title,
-          description: successMessage.description,
+          description: successMessage.description || result,
         });
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Unknown error";
-      setError(errorMsg);
+      // Ne pas stocker l'erreur dans l'état pour éviter le badge Error global
+      // setError(errorMsg);
       toast({
         title: errorMessage?.title || "Erreur",
         description: errorMessage?.description || errorMsg,

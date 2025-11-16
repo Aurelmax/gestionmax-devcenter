@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -44,42 +43,60 @@ pub struct ServiceStatus {
     pub pid: Option<u32>,
 }
 
-/// Retourne le chemin du fichier de configuration des projets
-fn get_projects_config_path() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set")?;
-    let config_dir = PathBuf::from(home).join(".gestionmax-devcenter");
-    
-    // Créer le dossier s'il n'existe pas
-    if !config_dir.exists() {
-        fs::create_dir_all(&config_dir)
-            .map_err(|e| format!("Failed to create config directory: {}", e))?;
-    }
-    
-    Ok(config_dir.join("projects.json"))
-}
 
-/// Liste tous les projets depuis le fichier JSON
+/// Liste tous les projets depuis le fichier JSON (ancien format pour compatibilité)
 #[tauri::command]
 pub async fn list_projects() -> Result<Vec<Project>, String> {
-    let config_path = get_projects_config_path()?;
+    // Utiliser le nouveau module projects pour charger
+    use crate::projects::load_projects;
     
-    // Si le fichier n'existe pas, créer un fichier vide
-    if !config_path.exists() {
-        let empty: Vec<Project> = Vec::new();
-        let json = serde_json::to_string_pretty(&empty)
-            .map_err(|e| format!("Failed to serialize empty projects: {}", e))?;
-        fs::write(&config_path, json)
-            .map_err(|e| format!("Failed to create projects.json: {}", e))?;
-        return Ok(empty);
-    }
+    let config = load_projects().await?;
     
-    let content = fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read projects.json: {}", e))?;
+    // Convertir le nouveau format vers l'ancien format pour la compatibilité
+    let old_projects: Vec<Project> = config.projects.into_iter().map(|new_p| {
+        let mut services = Vec::new();
+        
+        if let Some(tunnel) = new_p.services.tunnel {
+            services.push(ProjectService {
+                name: "tunnel".to_string(),
+                port: 0,
+                command: tunnel.start,
+            });
+        }
+        
+        if let Some(backend) = new_p.services.backend {
+            services.push(ProjectService {
+                name: "backend".to_string(),
+                port: backend.port.unwrap_or(3010),
+                command: backend.start,
+            });
+        }
+        
+        if let Some(frontend) = new_p.services.frontend {
+            services.push(ProjectService {
+                name: "frontend".to_string(),
+                port: frontend.port.unwrap_or(3000),
+                command: frontend.start,
+            });
+        }
+        
+        if let Some(netdata) = new_p.services.netdata {
+            services.push(ProjectService {
+                name: "netdata".to_string(),
+                port: netdata.port.unwrap_or(19999),
+                command: netdata.start,
+            });
+        }
+        
+        Project {
+            name: new_p.name,
+            path: new_p.backend_path,
+            stack: "Custom".to_string(),
+            services,
+        }
+    }).collect();
     
-    let projects: Vec<Project> = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse projects.json: {}", e))?;
-    
-    Ok(projects)
+    Ok(old_projects)
 }
 
 /// Vérifie si un port est ouvert
@@ -129,42 +146,68 @@ fn find_pid_by_port(port: u16) -> Option<u32> {
 /// Vérifie le statut de tous les services d'un projet
 #[tauri::command]
 pub async fn check_project_status(project_path: String) -> Result<Vec<ServiceStatus>, String> {
-    let config_path = get_projects_config_path()?;
+    use crate::projects::load_projects;
     
-    if !config_path.exists() {
-        return Ok(Vec::new());
-    }
+    let config = load_projects().await?;
     
-    let content = fs::read_to_string(&config_path)
-        .map_err(|e| format!("Failed to read projects.json: {}", e))?;
-    
-    let projects: Vec<Project> = serde_json::from_str(&content)
-        .map_err(|e| format!("Failed to parse projects.json: {}", e))?;
-    
-    // Trouver le projet correspondant
-    let project = projects
+    // Trouver le projet correspondant (chercher par backend_path ou frontend_path)
+    let project = config.projects
         .iter()
-        .find(|p| p.path == project_path)
+        .find(|p| p.backend_path == project_path || p.frontend_path == project_path)
         .ok_or_else(|| "Project not found".to_string())?;
     
     let mut statuses = Vec::new();
     
-    for service in &project.services {
-        let port_open = is_port_open(service.port);
-        let pid = if port_open { find_pid_by_port(service.port) } else { None };
-        
-        let status = if port_open {
-            "RUNNING".to_string()
-        } else {
-            "STOPPED".to_string()
-        };
-        
+    // Vérifier chaque service configuré
+    if project.services.tunnel.is_some() {
+        // Tunnel n'a pas de port, on vérifie par processus
+        let pid = find_process_by_name("ssh");
+        let status = if pid.is_some() { "RUNNING" } else { "STOPPED" };
         statuses.push(ServiceStatus {
-            name: service.name.clone(),
-            port: service.port,
-            status,
+            name: "tunnel".to_string(),
+            port: 0,
+            status: status.to_string(),
             pid,
         });
+    }
+    
+    if let Some(backend) = &project.services.backend {
+        if let Some(port) = backend.port {
+            let port_open = is_port_open(port);
+            let pid = if port_open { find_pid_by_port(port) } else { None };
+            statuses.push(ServiceStatus {
+                name: "backend".to_string(),
+                port,
+                status: if port_open { "RUNNING" } else { "STOPPED" }.to_string(),
+                pid,
+            });
+        }
+    }
+    
+    if let Some(frontend) = &project.services.frontend {
+        if let Some(port) = frontend.port {
+            let port_open = is_port_open(port);
+            let pid = if port_open { find_pid_by_port(port) } else { None };
+            statuses.push(ServiceStatus {
+                name: "frontend".to_string(),
+                port,
+                status: if port_open { "RUNNING" } else { "STOPPED" }.to_string(),
+                pid,
+            });
+        }
+    }
+    
+    if let Some(netdata) = &project.services.netdata {
+        if let Some(port) = netdata.port {
+            let port_open = is_port_open(port);
+            let pid = if port_open { find_pid_by_port(port) } else { None };
+            statuses.push(ServiceStatus {
+                name: "netdata".to_string(),
+                port,
+                status: if port_open { "RUNNING" } else { "STOPPED" }.to_string(),
+                pid,
+            });
+        }
     }
     
     Ok(statuses)
@@ -177,14 +220,40 @@ pub async fn start_project_service(
     service_name: String,
     command: String,
 ) -> Result<String, String> {
-    // Vérifier que le dossier du projet existe
-    let path = PathBuf::from(&project_path);
+    use crate::projects::load_projects;
+    
+    // Charger les projets pour trouver le bon chemin et script
+    let config = load_projects().await?;
+    let project = config.projects
+        .iter()
+        .find(|p| p.backend_path == project_path || p.frontend_path == project_path)
+        .ok_or_else(|| "Project not found".to_string())?;
+    
+    // Déterminer le chemin de travail selon le service
+    let work_dir = match service_name.as_str() {
+        "backend" => &project.backend_path,
+        "frontend" => &project.frontend_path,
+        _ => &project.backend_path,
+    };
+    
+    // Vérifier que le dossier existe
+    let path = PathBuf::from(work_dir);
     if !path.exists() {
-        return Err(format!("Project path does not exist: {}", project_path));
+        return Err(format!("Project path does not exist: {}", work_dir));
     }
     
-    // Séparer la commande en parties (ex: "pnpm dev:backend" -> ["pnpm", "dev:backend"])
-    let parts: Vec<&str> = command.split_whitespace().collect();
+    // Construire la commande complète avec le chemin des scripts
+    let scripts_path = PathBuf::from(&project.scripts_path);
+    let full_command = if command.starts_with('/') || command.starts_with("~/") {
+        // Chemin absolu
+        command
+    } else {
+        // Chemin relatif depuis scripts_path
+        scripts_path.join(&command).to_string_lossy().to_string()
+    };
+    
+    // Séparer la commande en parties
+    let parts: Vec<&str> = full_command.split_whitespace().collect();
     if parts.is_empty() {
         return Err("Command is empty".to_string());
     }
@@ -195,13 +264,16 @@ pub async fn start_project_service(
     // Démarrer le processus en arrière-plan
     let mut cmd = Command::new(program);
     cmd.args(args);
-    cmd.current_dir(&project_path);
+    cmd.current_dir(work_dir);
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
     
-    // Démarrer le processus
+    // Démarrer le processus et enregistrer le PID
     match cmd.spawn() {
-        Ok(_) => Ok(format!("Service {} started", service_name)),
+        Ok(child) => {
+            let pid = child.id();
+            Ok(format!("Service {} started (PID: {})", service_name, pid))
+        }
         Err(e) => Err(format!("Failed to start service: {}", e)),
     }
 }
@@ -268,29 +340,259 @@ pub async fn run_command(cmd: String) -> Result<String, String> {
 
 /// Démarre un service
 #[tauri::command]
-pub async fn start_service(service: String) -> Result<String, String> {
-    // TODO: Implémenter le démarrage des services
-    // Exemple:
-    // - tunnel: exécuter le script de tunnel SSH
-    // - backend: démarrer Payload
-    // - frontend: démarrer Next.js
-    // - netdata: démarrer Netdata
-    Ok(format!("Service {} started", service))
+pub async fn start_service(
+    service: String,
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<String, String> {
+    use std::process::{Command, Stdio};
+    
+    // Vérifier si le service est déjà en cours d'exécution
+    if let Some(pid) = state.get_pid(&service) {
+        // Vérifier si le processus existe encore
+        let check_cmd = Command::new("ps")
+            .arg("-p")
+            .arg(pid.to_string())
+            .output();
+        
+        if let Ok(output) = check_cmd {
+            if output.status.success() {
+                return Err(format!("Service {} is already running (PID: {})", service, pid));
+            }
+        }
+        // Le processus n'existe plus, on peut le retirer
+        state.remove_pid(&service);
+    }
+    
+    // Déterminer la commande selon le service
+    let home = std::env::var("HOME").map_err(|_| "HOME not set")?;
+    
+    let (program, args_vec) = match service.as_str() {
+        "tunnel" => {
+            let script = format!("{}/scripts/dev-tools/tunnel.sh", home);
+            let script_path_buf = std::path::PathBuf::from(&script);
+            if !script_path_buf.exists() {
+                return Err(format!("Script not found: {}", script));
+            }
+            (String::from("bash"), vec![script])
+        }
+        "backend" => {
+            let script = format!("{}/scripts/dev-tools/start-dev.sh", home);
+            let script_path_buf = std::path::PathBuf::from(&script);
+            if !script_path_buf.exists() {
+                return Err(format!("Script not found: {}", script));
+            }
+            (String::from("bash"), vec![script, String::from("backend")])
+        }
+        "frontend" => {
+            let script = format!("{}/scripts/dev-tools/start-dev.sh", home);
+            let script_path_buf = std::path::PathBuf::from(&script);
+            if !script_path_buf.exists() {
+                return Err(format!("Script not found: {}", script));
+            }
+            (String::from("bash"), vec![script, String::from("frontend")])
+        }
+        "netdata" => {
+            let script = format!("{}/scripts/dev-tools/netdata-on.sh", home);
+            let script_path_buf = std::path::PathBuf::from(&script);
+            if script_path_buf.exists() {
+                (String::from("bash"), vec![script])
+            } else {
+                (String::from("netdata"), vec![])
+            }
+        }
+        _ => return Err(format!("Unknown service: {}", service)),
+    };
+    
+    // Lancer le processus
+    let mut cmd = Command::new(&program);
+    for arg in &args_vec {
+        cmd.arg(arg);
+    }
+    cmd.stdout(Stdio::null());
+    cmd.stderr(Stdio::null());
+    cmd.stdin(Stdio::null());
+    
+    match cmd.spawn() {
+        Ok(child) => {
+            let pid = child.id();
+            state.register_pid(service.clone(), pid);
+            Ok(format!("Service {} started (PID: {})", service, pid))
+        }
+        Err(e) => Err(format!("Failed to start service {}: {}", service, e)),
+    }
 }
 
 /// Arrête un service
 #[tauri::command]
-pub async fn stop_service(service: String) -> Result<String, String> {
-    // TODO: Implémenter l'arrêt des services
-    // Exemple: trouver le processus et le tuer
-    Ok(format!("Service {} stopped", service))
+pub async fn stop_service(
+    service: String,
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<String, String> {
+    
+    // Récupérer le PID depuis l'état
+    let pid = match state.get_pid(&service) {
+        Some(pid) => pid,
+        None => {
+            // Essayer de trouver le processus par nom
+            return match find_process_by_name(&service) {
+                Some(pid) => {
+                    kill_process(pid)?;
+                    state.remove_pid(&service);
+                    Ok(format!("Service {} stopped (PID: {})", service, pid))
+                }
+                None => Err(format!("Service {} is not running", service)),
+            };
+        }
+    };
+    
+    // Tuer le processus
+    kill_process(pid)?;
+    
+    // Retirer le PID de l'état
+    state.remove_pid(&service);
+    
+    Ok(format!("Service {} stopped (PID: {})", service, pid))
+}
+
+/// Tue un processus par son PID
+fn kill_process(pid: u32) -> Result<(), String> {
+    use std::process::Command;
+    
+    // Essayer d'abord avec SIGTERM (arrêt propre)
+    let term_output = Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .output()
+        .map_err(|e| format!("Failed to execute kill: {}", e))?;
+    
+    if term_output.status.success() {
+        // Attendre un peu pour que le processus se termine proprement
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        
+        // Vérifier si le processus existe encore
+        let check_output = Command::new("ps")
+            .arg("-p")
+            .arg(pid.to_string())
+            .output()
+            .ok();
+        
+        if let Some(output) = check_output {
+            if output.status.success() {
+                // Le processus existe encore, utiliser SIGKILL
+                let kill_output = Command::new("kill")
+                    .arg("-9")
+                    .arg(pid.to_string())
+                    .output()
+                    .map_err(|e| format!("Failed to execute kill -9: {}", e))?;
+                
+                if !kill_output.status.success() {
+                    return Err(format!("Failed to kill process {}", pid));
+                }
+            }
+        }
+        Ok(())
+    } else {
+        // SIGTERM a échoué, essayer SIGKILL directement
+        let kill_output = Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .output()
+            .map_err(|e| format!("Failed to execute kill -9: {}", e))?;
+        
+        if kill_output.status.success() {
+            Ok(())
+        } else {
+            Err(format!("Failed to kill process {}", pid))
+        }
+    }
+}
+
+/// Trouve un processus par son nom
+fn find_process_by_name(service: &str) -> Option<u32> {
+    use std::process::Command;
+    
+    // Mapping des noms de services vers les noms de processus
+    let process_name = match service {
+        "tunnel" => "ssh",
+        "backend" => "node",
+        "frontend" => "node",
+        "netdata" => "netdata",
+        _ => return None,
+    };
+    
+    // Utiliser pgrep pour trouver le PID
+    let output = Command::new("pgrep")
+        .arg("-f")
+        .arg(process_name)
+        .output()
+        .ok()?;
+    
+    if output.status.success() {
+        let pid_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if let Some(first_pid) = pid_str.lines().next() {
+            first_pid.parse::<u32>().ok()
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
 
 /// Arrête tous les services
 #[tauri::command]
-pub async fn stop_all_services() -> Result<String, String> {
-    // TODO: Implémenter l'arrêt de tous les services
-    Ok("All services stopped".to_string())
+pub async fn stop_all_services(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<String, String> {
+    let all_pids = state.get_all_pids();
+    
+    if all_pids.is_empty() {
+        return Ok("No services to stop".to_string());
+    }
+    
+    let mut stopped = Vec::new();
+    let mut errors = Vec::new();
+    
+    // Arrêter tous les services enregistrés
+    for (service, pid) in all_pids.iter() {
+        match kill_process(*pid) {
+            Ok(_) => {
+                state.remove_pid(service);
+                stopped.push(format!("{} (PID: {})", service, pid));
+            }
+            Err(e) => {
+                errors.push(format!("{}: {}", service, e));
+            }
+        }
+    }
+    
+    // Arrêter aussi les services qui pourraient tourner sans être enregistrés
+    let services = vec!["tunnel", "backend", "frontend", "netdata"];
+    for service in services {
+        if let Some(pid) = find_process_by_name(service) {
+            // Vérifier qu'on ne l'a pas déjà arrêté
+            if !all_pids.contains_key(service) {
+                match kill_process(pid) {
+                    Ok(_) => {
+                        stopped.push(format!("{} (PID: {})", service, pid));
+                    }
+                    Err(e) => {
+                        errors.push(format!("{}: {}", service, e));
+                    }
+                }
+            }
+        }
+    }
+    
+    if errors.is_empty() {
+        Ok(format!("All services stopped: {}", stopped.join(", ")))
+    } else {
+        Err(format!(
+            "Some services failed to stop. Stopped: {}. Errors: {}",
+            stopped.join(", "),
+            errors.join(", ")
+        ))
+    }
 }
 
 /// Tue les processus zombies
@@ -303,26 +605,56 @@ pub async fn kill_zombies() -> Result<String, String> {
 
 /// Vérifie le statut du système
 #[tauri::command]
-pub async fn check_status() -> Result<SystemStatus, String> {
+pub async fn check_status(
+    state: tauri::State<'_, crate::state::AppState>,
+) -> Result<SystemStatus, String> {
     // TODO: Implémenter la récupération du statut système réel
     // - CPU: utiliser sysinfo ou /proc/stat
     // - RAM: utiliser sysinfo ou /proc/meminfo
     // - Disk: utiliser sysinfo ou df
     // - Uptime: utiliser /proc/uptime
-    // - Services: vérifier si les processus sont en cours d'exécution
     
-    // Pour l'instant, retourner des valeurs dummy
+    // Vérifier le statut des services depuis l'AppState
+    let all_pids = state.get_all_pids();
+    
+    // Vérifier si les processus existent encore
+    let mut services_status = ServicesStatus {
+        tunnel: false,
+        backend: false,
+        frontend: false,
+        netdata: false,
+    };
+    
+    for (service, pid) in all_pids.iter() {
+        // Vérifier si le processus existe
+        let check_cmd = std::process::Command::new("ps")
+            .arg("-p")
+            .arg(pid.to_string())
+            .output();
+        
+        if let Ok(output) = check_cmd {
+            if output.status.success() {
+                match service.as_str() {
+                    "tunnel" => services_status.tunnel = true,
+                    "backend" => services_status.backend = true,
+                    "frontend" => services_status.frontend = true,
+                    "netdata" => services_status.netdata = true,
+                    _ => {}
+                }
+            } else {
+                // Le processus n'existe plus, le retirer
+                state.remove_pid(service);
+            }
+        }
+    }
+    
+    // Pour l'instant, retourner des valeurs dummy pour les métriques système
     Ok(SystemStatus {
         cpu: 25.5,
         ram: 45.2,
         disk: 60.0,
         uptime: 3600, // 1 heure en secondes
-        services: ServicesStatus {
-            tunnel: false,
-            backend: false,
-            frontend: false,
-            netdata: false,
-        },
+        services: services_status,
     })
 }
 

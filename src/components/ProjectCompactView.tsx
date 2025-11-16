@@ -103,8 +103,11 @@ function ProjectCard({ project }: { project: ProjectWithStatus }) {
       <CardContent className="space-y-3">
         {/* Services */}
         <div className="space-y-2">
-          {project.servicesStatus.map((serviceStatus, index) => {
-            const service = project.services[index];
+          {project.servicesStatus.map((serviceStatus) => {
+            // Trouver le service correspondant par nom
+            const service = project.services.find(s => s.name === serviceStatus.name);
+            if (!service) return null;
+            
             const isRunning = serviceStatus.status === "RUNNING";
             const isLoading = loadingService === service.name;
 
@@ -254,10 +257,9 @@ export default function ProjectCompactView() {
       <Card className="bg-gray-800/50 border-gray-700">
         <CardContent className="pt-6">
           <p className="text-center text-gray-400">
-            Aucun projet configuré. Créez le fichier{" "}
-            <code className="text-xs bg-gray-900 px-1 py-0.5 rounded">
-              ~/.gestionmax-devcenter/projects.json
-            </code>
+            Aucun projet configuré. Utilisez l'onglet{" "}
+            <span className="font-semibold text-blue-400">Configuration → Project Manager</span>{" "}
+            pour ajouter des projets.
           </p>
         </CardContent>
       </Card>

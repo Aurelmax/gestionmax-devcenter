@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import {
-  listProjects,
+  loadProjects,
+} from "@/lib/projectManager";
+import { convertProjectsToOldFormat } from "@/lib/projectConverter";
+import {
   checkProjectStatus,
   startProjectService,
   stopProjectService,
@@ -18,9 +21,15 @@ export function useProjects() {
 
   const fetchProjects = useCallback(async () => {
     try {
-      const projectsList = await listProjects();
+      // Charger les projets au nouveau format
+      const config = await loadProjects();
+      
+      // Convertir vers l'ancien format pour la compatibilité
+      const oldProjects = convertProjectsToOldFormat(config);
+      
+      // Pour chaque projet, vérifier le statut des services
       const projectsWithStatus: ProjectWithStatus[] = await Promise.all(
-        projectsList.map(async (project) => {
+        oldProjects.map(async (project) => {
           const servicesStatus = await checkProjectStatus(project.path);
           return {
             ...project,
@@ -28,6 +37,7 @@ export function useProjects() {
           };
         })
       );
+      
       setProjects(projectsWithStatus);
       setError(null);
     } catch (err) {
@@ -102,4 +112,3 @@ export function useProjects() {
     stopService,
   };
 }
-

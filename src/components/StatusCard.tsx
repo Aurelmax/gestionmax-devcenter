@@ -112,8 +112,12 @@ export default function StatusCard({
           <Button
             onClick={onStop.execute}
             disabled={isLoading || !isActive}
-            variant="destructive"
-            className="w-full bg-red-600 hover:bg-red-700 text-white"
+            variant={isActive ? "destructive" : "secondary"}
+            className={`w-full ${
+              isActive 
+                ? "bg-red-600 hover:bg-red-700 text-white" 
+                : "bg-gray-600 hover:bg-gray-700 text-gray-300 opacity-50"
+            }`}
             size="sm"
           >
             {onStop.isLoading ? (

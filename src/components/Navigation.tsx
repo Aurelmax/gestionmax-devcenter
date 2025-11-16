@@ -31,7 +31,7 @@ export default function Navigation() {
               <Terminal className="w-4 h-4 mr-2" />
               Logs
             </TabsTrigger>
-            <TabsTrigger value="config" className="data-[state=active]:bg-gray-700" disabled>
+            <TabsTrigger value="config" className="data-[state=active]:bg-gray-700">
               <Settings className="w-4 h-4 mr-2" />
               Configuration
             </TabsTrigger>
