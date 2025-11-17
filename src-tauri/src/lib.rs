@@ -2,11 +2,13 @@ mod commands;
 mod state;
 mod projects;
 mod autoscan;
+mod git_import;
 
 use commands::*;
 use state::AppState;
 use projects::*;
 use autoscan::*;
+use git_import::*;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -34,7 +36,8 @@ pub fn run() {
             update_project,
             delete_project,
             pick_project_folder,
-            autoscan_project
+            autoscan_project,
+            clone_git_repo
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

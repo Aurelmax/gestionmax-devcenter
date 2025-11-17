@@ -5,6 +5,27 @@ use regex::Regex;
 
 use crate::projects::{Project, ProjectCommand, ProjectServices};
 
+/// Liste des dossiers à ignorer lors du scan
+const IGNORE_DIRS: &[&str] = &[
+    "_archive",
+    "archive",
+    "docs",
+    "documentation",
+    "frontend-backup",
+    "backend-backup",
+    ".git",
+    ".vscode",
+    ".idea",
+    "__tests__",
+    "dist",
+    "node_modules",
+];
+
+/// Vérifie si un dossier doit être ignoré
+fn should_ignore_dir(dir_name: &str) -> bool {
+    IGNORE_DIRS.iter().any(|&ignore| dir_name == ignore || dir_name.starts_with(ignore))
+}
+
 /// Ouvre un dialogue pour choisir un dossier de projet
 #[tauri::command]
 pub async fn pick_project_folder() -> Result<String, String> {
@@ -26,7 +47,7 @@ pub async fn pick_project_folder() -> Result<String, String> {
     Ok(path.trim().to_string())
 }
 
-/// Détecte automatiquement la structure d'un projet
+/// Détecte automatiquement la structure d'un projet (AutoScan v2 - Monorepo)
 #[tauri::command]
 pub async fn autoscan_project(root_path: String) -> Result<Project, String> {
     let root = PathBuf::from(&root_path);
@@ -42,14 +63,14 @@ pub async fn autoscan_project(root_path: String) -> Result<Project, String> {
         .unwrap_or("Unknown Project")
         .to_string();
     
-    // Détecter backend
-    let backend_path = detect_backend(&root)?;
+    // Détecter backend (recherche récursive avec ignore list)
+    let backend_path = detect_backend_v2(&root, 0)?;
     
-    // Détecter frontend
-    let frontend_path = detect_frontend(&root)?;
+    // Détecter frontend (recherche récursive avec ignore list)
+    let frontend_path = detect_frontend_v2(&root, 0)?;
     
-    // Détecter scripts
-    let scripts_path = detect_scripts(&root)?;
+    // Détecter scripts (recherche récursive avec ignore list)
+    let scripts_path = detect_scripts_v2(&root, 0)?;
     
     // Détecter les services
     let services = detect_services(&root, &backend_path, &frontend_path, &scripts_path)?;
@@ -63,96 +84,215 @@ pub async fn autoscan_project(root_path: String) -> Result<Project, String> {
     })
 }
 
-/// Détecte le dossier backend Payload
-fn detect_backend(root: &Path) -> Result<Option<String>, String> {
-    let backend_dirs = vec!["backend", "back", "api", "server"];
+/// Détecte le dossier backend Payload (v2 - avec ignore list et recherche récursive)
+fn detect_backend_v2(root: &Path, depth: u32) -> Result<Option<String>, String> {
+    // Limiter à 2 niveaux de profondeur
+    if depth > 2 {
+        return Ok(None);
+    }
     
-    for dir_name in backend_dirs {
-        let backend_path = root.join(dir_name);
-        if backend_path.exists() && backend_path.is_dir() {
-            let package_json = backend_path.join("package.json");
-            let payload_config = backend_path.join("payload.config.ts");
-            
-            if package_json.exists() {
-                // Vérifier si c'est un projet Payload
-                if payload_config.exists() {
-                    return Ok(Some(backend_path.to_string_lossy().to_string()));
-                }
-                
-                // Vérifier dans package.json si c'est Payload
-                if let Ok(content) = fs::read_to_string(&package_json) {
-                    if content.contains("payload") || content.contains("@payloadcms") {
-                        return Ok(Some(backend_path.to_string_lossy().to_string()));
-                    }
-                }
+    // Vérifier si le root lui-même est un backend Payload
+    let package_json = root.join("package.json");
+    let payload_config = root.join("payload.config.ts");
+    let src_dir = root.join("src");
+    
+    if package_json.exists() && (payload_config.exists() || src_dir.exists()) {
+        // Vérifier si c'est vraiment Payload
+        if payload_config.exists() {
+            return Ok(Some(root.to_string_lossy().to_string()));
+        }
+        
+        // Vérifier dans package.json
+        if let Ok(content) = fs::read_to_string(&package_json) {
+            if content.contains("payload") || content.contains("@payloadcms") {
+                return Ok(Some(root.to_string_lossy().to_string()));
             }
         }
     }
     
-    // Si le root lui-même contient payload.config.ts
-    let root_payload_config = root.join("payload.config.ts");
-    if root_payload_config.exists() {
-        return Ok(Some(root.to_string_lossy().to_string()));
+    // Rechercher récursivement dans les sous-dossiers
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                
+                if path.is_dir() {
+                    let dir_name = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("");
+                    
+                    // Ignorer les dossiers parasites
+                    if should_ignore_dir(dir_name) {
+                        continue;
+                    }
+                    
+                    // Rechercher récursivement
+                    if let Ok(Some(backend_path)) = detect_backend_v2(&path, depth + 1) {
+                        return Ok(Some(backend_path));
+                    }
+                }
+            }
+        }
     }
     
     Ok(None)
 }
 
-/// Détecte le dossier frontend Next.js
-fn detect_frontend(root: &Path) -> Result<Option<String>, String> {
-    let frontend_dirs = vec!["frontend", "front", "web", "app", "client"];
-    
-    for dir_name in frontend_dirs {
-        let frontend_path = root.join(dir_name);
-        if frontend_path.exists() && frontend_path.is_dir() {
-            let package_json = frontend_path.join("package.json");
-            
-            if package_json.exists() {
-                if let Ok(content) = fs::read_to_string(&package_json) {
-                    if content.contains("\"next\"") || content.contains("nextjs") {
-                        return Ok(Some(frontend_path.to_string_lossy().to_string()));
-                    }
-                }
-            }
-        }
+/// Détecte le dossier frontend Next.js (v2 - avec ignore list et recherche récursive)
+fn detect_frontend_v2(root: &Path, depth: u32) -> Result<Option<String>, String> {
+    // Limiter à 2 niveaux de profondeur
+    if depth > 2 {
+        return Ok(None);
     }
     
-    // Si le root lui-même contient next.config.js
-    let root_next_config = root.join("next.config.js");
-    if root_next_config.exists() {
-        let package_json = root.join("package.json");
-        if package_json.exists() {
-            if let Ok(content) = fs::read_to_string(&package_json) {
-                if content.contains("\"next\"") {
+    // Vérifier si le root lui-même est un frontend Next.js
+    let package_json = root.join("package.json");
+    let next_config = root.join("next.config.js");
+    
+    if package_json.exists() {
+        if let Ok(content) = fs::read_to_string(&package_json) {
+            if content.contains("\"next\"") || content.contains("nextjs") {
+                // Ignorer les backups
+                let dir_name = root.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                
+                if !should_ignore_dir(dir_name) {
                     return Ok(Some(root.to_string_lossy().to_string()));
                 }
             }
         }
     }
     
+    // Vérifier next.config.js
+    if next_config.exists() {
+        let package_json = root.join("package.json");
+        if package_json.exists() {
+            if let Ok(content) = fs::read_to_string(&package_json) {
+                if content.contains("\"next\"") {
+                    let dir_name = root.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("");
+                    
+                    if !should_ignore_dir(dir_name) {
+                        return Ok(Some(root.to_string_lossy().to_string()));
+                    }
+                }
+            }
+        }
+    }
+    
+    // Rechercher récursivement dans les sous-dossiers
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                
+                if path.is_dir() {
+                    let dir_name = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("");
+                    
+                    // Ignorer les dossiers parasites
+                    if should_ignore_dir(dir_name) {
+                        continue;
+                    }
+                    
+                    // Rechercher récursivement
+                    if let Ok(Some(frontend_path)) = detect_frontend_v2(&path, depth + 1) {
+                        return Ok(Some(frontend_path));
+                    }
+                }
+            }
+        }
+    }
+    
     Ok(None)
 }
 
-/// Détecte le dossier scripts
-fn detect_scripts(root: &Path) -> Result<Option<String>, String> {
-    let scripts_paths = vec!["scripts", "script", "tools", "dev-tools"];
+/// Détecte le dossier scripts (v2 - avec ignore list et recherche récursive)
+fn detect_scripts_v2(root: &Path, depth: u32) -> Result<Option<String>, String> {
+    // Limiter à 2 niveaux de profondeur
+    if depth > 2 {
+        return Ok(None);
+    }
     
-    for dir_name in scripts_paths {
+    // Priorité des dossiers scripts
+    let scripts_paths = vec!["scripts", "scripts/dev-tools", "tools", "dev"];
+    
+    // Vérifier dans le root
+    for dir_name in &scripts_paths {
         let scripts_path = root.join(dir_name);
         if scripts_path.exists() && scripts_path.is_dir() {
-            return Ok(Some(scripts_path.to_string_lossy().to_string()));
+            // Vérifier qu'il contient des fichiers .sh
+            if has_shell_scripts(&scripts_path) {
+                return Ok(Some(scripts_path.to_string_lossy().to_string()));
+            }
         }
     }
     
-    // Chercher dans le home directory
-    if let Ok(home) = std::env::var("HOME") {
-        let home_scripts = PathBuf::from(home).join("scripts").join("dev-tools");
-        if home_scripts.exists() {
-            return Ok(Some(home_scripts.to_string_lossy().to_string()));
+    // Rechercher récursivement dans les sous-dossiers
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                
+                if path.is_dir() {
+                    let dir_name = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("");
+                    
+                    // Ignorer les dossiers parasites
+                    if should_ignore_dir(dir_name) {
+                        continue;
+                    }
+                    
+                    // Vérifier si c'est un dossier scripts
+                    if scripts_paths.iter().any(|&s| dir_name == s || dir_name.contains(s)) {
+                        if has_shell_scripts(&path) {
+                            return Ok(Some(path.to_string_lossy().to_string()));
+                        }
+                    }
+                    
+                    // Rechercher récursivement
+                    if let Ok(Some(scripts_path)) = detect_scripts_v2(&path, depth + 1) {
+                        return Ok(Some(scripts_path));
+                    }
+                }
+            }
+        }
+    }
+    
+    // Chercher dans le home directory en dernier recours
+    if depth == 0 {
+        if let Ok(home) = std::env::var("HOME") {
+            let home_scripts = PathBuf::from(home).join("scripts").join("dev-tools");
+            if home_scripts.exists() && has_shell_scripts(&home_scripts) {
+                return Ok(Some(home_scripts.to_string_lossy().to_string()));
+            }
         }
     }
     
     Ok(None)
+}
+
+/// Vérifie si un dossier contient des scripts shell (.sh)
+fn has_shell_scripts(path: &Path) -> bool {
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension() {
+                        if ext == "sh" {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 /// Détecte tous les services (tunnel, backend, frontend, netdata)
@@ -198,27 +338,70 @@ fn detect_services(
     })
 }
 
-/// Détecte le service Tunnel SSH
+/// Détecte le service Tunnel SSH (v2 - recherche par nom contenant tunnel/ssh)
 fn detect_tunnel(scripts_path: &Path) -> Result<Option<ProjectCommand>, String> {
-    let tunnel_scripts = vec!["tunnel.sh", "ssh-tunnel.sh", "dev-tunnel.sh", "tunnel-on.sh"];
-    let stop_scripts = vec!["tunnel-off.sh", "tunnel-stop.sh", "ssh-tunnel-off.sh"];
-    
-    for script in &tunnel_scripts {
-        let script_path = scripts_path.join(script);
-        if script_path.exists() {
-            let stop = stop_scripts.iter()
-                .find(|s| scripts_path.join(s).exists())
-                .map(|s| s.to_string());
-            
-            return Ok(Some(ProjectCommand {
-                start: script.to_string(),
-                stop,
-                port: None,
-            }));
+    // Rechercher tous les fichiers .sh dans le dossier scripts
+    if let Ok(entries) = fs::read_dir(scripts_path) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                let path = entry.path();
+                
+                if path.is_file() {
+                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                        let file_name_lower = file_name.to_lowercase();
+                        
+                        // Un script est tunnel si le nom contient tunnel, ssh, ou dev-tunnel
+                        if file_name_lower.contains("tunnel") || 
+                           file_name_lower.contains("ssh") ||
+                           file_name_lower.contains("dev-tunnel") {
+                            
+                            // Chercher un script stop correspondant
+                            let stop = find_stop_script(scripts_path, file_name);
+                            
+                            return Ok(Some(ProjectCommand {
+                                start: file_name.to_string(),
+                                stop,
+                                port: None,
+                            }));
+                        }
+                    }
+                }
+            }
         }
     }
     
     Ok(None)
+}
+
+/// Trouve un script stop correspondant à un script start
+fn find_stop_script(scripts_path: &Path, start_script: &str) -> Option<String> {
+    let start_lower = start_script.to_lowercase();
+    
+    // Patterns de scripts stop
+    let stop_patterns = vec![
+        start_lower.replace(".sh", "-off.sh"),
+        start_lower.replace(".sh", "-stop.sh"),
+        start_lower.replace("tunnel", "tunnel-off"),
+        start_lower.replace("ssh", "ssh-off"),
+    ];
+    
+    if let Ok(entries) = fs::read_dir(scripts_path) {
+        for entry in entries {
+            if let Ok(entry) = entry {
+                if let Some(file_name) = entry.path().file_name().and_then(|n| n.to_str()) {
+                    let file_name_lower = file_name.to_lowercase();
+                    
+                    for pattern in &stop_patterns {
+                        if file_name_lower.contains(pattern) || file_name_lower == *pattern {
+                            return Some(file_name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    None
 }
 
 /// Détecte le service Backend avec son port et script

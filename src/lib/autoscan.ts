@@ -23,3 +23,17 @@ export async function autoscanProject(path: string): Promise<Project> {
   }
 }
 
+/**
+ * Clone un dépôt Git dans ~/CascadeProjects/
+ */
+export async function cloneGitRepo(url: string, targetDir?: string): Promise<string> {
+  try {
+    return await invoke<string>("clone_git_repo", { 
+      url, 
+      target_dir: targetDir 
+    });
+  } catch (error) {
+    throw new Error(`Failed to clone Git repository: ${error}`);
+  }
+}
+

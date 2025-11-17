@@ -1,6 +1,7 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import ProjectManager from "./Configuration/ProjectManager";
 import AutoScanProject from "./Configuration/AutoScanProject";
+import ImportGit from "./Configuration/ImportGit";
 
 export default function Configuration() {
   return (
@@ -8,12 +9,17 @@ export default function Configuration() {
       <div className="container mx-auto">
         <h1 className="text-3xl font-bold mb-6">Configuration</h1>
         
-        <Tabs defaultValue="autoscan" className="w-full">
+        <Tabs defaultValue="import-git" className="w-full">
           <TabsList className="mb-6">
+            <TabsTrigger value="import-git">Import Git</TabsTrigger>
             <TabsTrigger value="autoscan">Auto-Scan</TabsTrigger>
             <TabsTrigger value="projects">Project Manager</TabsTrigger>
             <TabsTrigger value="settings" disabled>Paramètres</TabsTrigger>
           </TabsList>
+          
+          <TabsContent value="import-git">
+            <ImportGit />
+          </TabsContent>
           
           <TabsContent value="autoscan">
             <AutoScanProject />
