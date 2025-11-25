@@ -1,17 +1,17 @@
 import { CheckCircle2, XCircle, AlertCircle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Project } from "@/types/Project";
+import { ProjectScanResult } from "@/types/Project";
 
 interface AutoScanSummaryProps {
-  project: Project;
+  scan: ProjectScanResult;
 }
 
-export default function AutoScanSummary({ project }: AutoScanSummaryProps) {
-  const hasBackend = !!project.services.backend;
-  const hasFrontend = !!project.services.frontend;
-  const hasTunnel = !!project.services.tunnel;
-  const hasNetdata = !!project.services.netdata;
+export default function AutoScanSummary({ scan }: AutoScanSummaryProps) {
+  const hasBackend = !!scan.backend_path;
+  const hasFrontend = !!scan.frontend_path;
+  const hasTunnel = !!scan.scripts.tunnel;
+  const hasNetdata = !!scan.scripts.netdata;
 
   const StatusIcon = ({ detected }: { detected: boolean }) => {
     if (detected) {
@@ -30,7 +30,7 @@ export default function AutoScanSummary({ project }: AutoScanSummaryProps) {
         <div className="pb-3 border-b border-gray-700">
           <div className="flex items-center gap-2">
             <span className="text-sm text-gray-400">Nom du projet :</span>
-            <span className="text-lg font-semibold text-white">{project.name}</span>
+            <span className="text-lg font-semibold text-white">{scan.name}</span>
           </div>
         </div>
 
@@ -38,15 +38,21 @@ export default function AutoScanSummary({ project }: AutoScanSummaryProps) {
         <div className="space-y-2">
           <div>
             <span className="text-sm text-gray-400">Backend Path:</span>
-            <p className="text-xs font-mono text-gray-300 mt-1">{project.backend_path}</p>
+            <p className="text-xs font-mono text-gray-300 mt-1">
+              {scan.backend_path ?? "Non détecté"}
+            </p>
           </div>
           <div>
             <span className="text-sm text-gray-400">Frontend Path:</span>
-            <p className="text-xs font-mono text-gray-300 mt-1">{project.frontend_path}</p>
+            <p className="text-xs font-mono text-gray-300 mt-1">
+              {scan.frontend_path ?? "Non détecté"}
+            </p>
           </div>
           <div>
             <span className="text-sm text-gray-400">Scripts Path:</span>
-            <p className="text-xs font-mono text-gray-300 mt-1">{project.scripts_path}</p>
+            <p className="text-xs font-mono text-gray-300 mt-1">
+              {scan.scripts_path ?? "Non détecté"}
+            </p>
           </div>
         </div>
 
@@ -62,14 +68,14 @@ export default function AutoScanSummary({ project }: AutoScanSummaryProps) {
             </div>
             {hasBackend && (
               <div className="flex items-center gap-2">
-                {project.services.backend?.port && (
-                  <Badge variant="secondary" className="text-xs">
-                    Port: {project.services.backend.port}
-                  </Badge>
+                <Badge variant="secondary" className="text-xs">
+                  Port: {scan.backend_port ?? 3010}
+                </Badge>
+                {scan.backend_start && (
+                  <span className="text-xs text-gray-400 font-mono">
+                    {scan.backend_start}
+                  </span>
                 )}
-                <span className="text-xs text-gray-400 font-mono">
-                  {project.services.backend?.start}
-                </span>
               </div>
             )}
           </div>
@@ -82,14 +88,14 @@ export default function AutoScanSummary({ project }: AutoScanSummaryProps) {
             </div>
             {hasFrontend && (
               <div className="flex items-center gap-2">
-                {project.services.frontend?.port && (
-                  <Badge variant="secondary" className="text-xs">
-                    Port: {project.services.frontend.port}
-                  </Badge>
+                <Badge variant="secondary" className="text-xs">
+                  Port: {scan.frontend_port ?? 3000}
+                </Badge>
+                {scan.frontend_start && (
+                  <span className="text-xs text-gray-400 font-mono">
+                    {scan.frontend_start}
+                  </span>
                 )}
-                <span className="text-xs text-gray-400 font-mono">
-                  {project.services.frontend?.start}
-                </span>
               </div>
             )}
           </div>
@@ -100,10 +106,10 @@ export default function AutoScanSummary({ project }: AutoScanSummaryProps) {
               <StatusIcon detected={hasTunnel} />
               <span className="text-sm text-gray-200">Tunnel SSH</span>
             </div>
-            {hasTunnel && (
+            {hasTunnel && scan.scripts.tunnel && (
               <span className="text-xs text-gray-400 font-mono">
-                {project.services.tunnel?.start}
-                {project.services.tunnel?.stop && ` / ${project.services.tunnel.stop}`}
+                {scan.scripts.tunnel.start}
+                {scan.scripts.tunnel.stop && ` / ${scan.scripts.tunnel.stop}`}
               </span>
             )}
           </div>
@@ -117,11 +123,11 @@ export default function AutoScanSummary({ project }: AutoScanSummaryProps) {
             {hasNetdata && (
               <div className="flex items-center gap-2">
                 <Badge variant="secondary" className="text-xs">
-                  Port: {project.services.netdata?.port}
+                  Port: {scan.scripts.netdata.port}
                 </Badge>
                 <span className="text-xs text-gray-400 font-mono">
-                  {project.services.netdata?.start}
-                  {project.services.netdata?.stop && ` / ${project.services.netdata.stop}`}
+                  {scan.scripts.netdata.start}
+                  {scan.scripts.netdata.stop && ` / ${scan.scripts.netdata.stop}`}
                 </span>
               </div>
             )}
@@ -129,16 +135,25 @@ export default function AutoScanSummary({ project }: AutoScanSummaryProps) {
         </div>
 
         {/* Avertissement si services manquants */}
-        {(!hasBackend || !hasFrontend) && (
+        {(!hasBackend || !hasFrontend || scan.warnings.length > 0) && (
           <div className="flex items-start gap-2 p-3 bg-yellow-900/20 border border-yellow-700/50 rounded-lg">
             <AlertCircle className="w-5 h-5 text-yellow-400 mt-0.5" />
             <div className="flex-1">
               <p className="text-sm text-yellow-300 font-medium">Services manquants</p>
-              <p className="text-xs text-yellow-400/80 mt-1">
-                {!hasBackend && "Backend Payload non détecté. "}
-                {!hasFrontend && "Frontend Next.js non détecté. "}
-                Le projet sera ajouté avec les services détectés uniquement.
-              </p>
+              <div className="space-y-2 mt-1">
+                <p className="text-xs text-yellow-400/80">
+                  {!hasBackend && "Backend Payload non détecté. "}
+                  {!hasFrontend && "Frontend Next.js non détecté. "}
+                  Le projet sera ajouté avec les services détectés uniquement.
+                </p>
+                {scan.warnings.length > 0 && (
+                  <ul className="list-disc list-inside text-xs text-yellow-400/80 space-y-1">
+                    {scan.warnings.map((warning) => (
+                      <li key={warning}>{warning}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
             </div>
           </div>
         )}

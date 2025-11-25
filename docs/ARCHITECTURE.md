@@ -70,6 +70,8 @@ Rust s'occupe de :
 
 L'application ne dépend d'aucun service externe.
 
+**Scripts embarqués** : Tous les scripts de gestion des services sont maintenant embarqués dans le bundle Tauri et se trouvent dans `src-tauri/resources/scripts/`. Plus besoin de scripts externes dans `~/scripts/dev-tools/`.
+
 ---
 
 ## 5. Frontend React
@@ -100,6 +102,26 @@ flowchart TD
     START --> LOAD_STATS --> LOAD_PROJECTS --> CHECK_STATUS --> RENDER
     RENDER --> POLLING --> CHECK_STATUS
 ```
+
+### 6.1. Architecture des services
+
+Le Dashboard distingue deux types de services :
+
+**Services globaux** (section "Services globaux") :
+- **Tunnel SSH** : Un seul tunnel partagé pour tous les projets
+- **Netdata** : Un seul instance de monitoring pour tout le système
+- Ces services sont contrôlés depuis la section globale du Dashboard
+
+**Services de projet** (dans chaque carte de projet) :
+- **Backend** : Spécifique à chaque projet (chaque projet a son propre backend)
+- **Frontend** : Spécifique à chaque projet (chaque projet a son propre frontend)
+- **Netdata** : Peut être configuré par projet (mais généralement partagé)
+- Ces services sont contrôlés depuis la carte de chaque projet
+
+**Pourquoi cette séparation ?**
+- Avec plusieurs projets, chaque projet a ses propres backend/frontend sur des ports différents
+- Le Tunnel SSH et Netdata sont vraiment globaux (un seul par machine)
+- Cette architecture évite la confusion : on sait clairement quel service appartient à quel projet
 
 ## 6.1. Modules de gestion de projets
 

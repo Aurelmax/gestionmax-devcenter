@@ -9,8 +9,7 @@ pub async fn clone_git_repo(url: String, target_dir: Option<String>) -> Result<S
         PathBuf::from(dir)
     } else {
         // Par défaut : ~/CascadeProjects/
-        let home = std::env::var("HOME")
-            .map_err(|_| "HOME environment variable not set")?;
+        let home = std::env::var("HOME").map_err(|_| "HOME environment variable not set")?;
         PathBuf::from(home).join("CascadeProjects")
     };
 
@@ -41,7 +40,12 @@ pub async fn clone_git_repo(url: String, target_dir: Option<String>) -> Result<S
         .arg(&url)
         .arg(&project_path)
         .output()
-        .map_err(|e| format!("Failed to execute git clone: {}. Make sure git is installed.", e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to execute git clone: {}. Make sure git is installed.",
+                e
+            )
+        })?;
 
     if !output.status.success() {
         let error_msg = String::from_utf8_lossy(&output.stderr);
@@ -54,7 +58,7 @@ pub async fn clone_git_repo(url: String, target_dir: Option<String>) -> Result<S
 /// Extrait le nom du projet depuis une URL Git
 fn extract_project_name_from_url(url: &str) -> Result<String, String> {
     let mut url = url.trim().to_string();
-    
+
     // Supprimer les protocoles (https://, http://, git@, ssh://)
     if url.starts_with("https://") {
         url = url[8..].to_string();
@@ -94,7 +98,7 @@ fn extract_project_name_from_url(url: &str) -> Result<String, String> {
 fn format_project_name(name: &str) -> String {
     // Remplacer les tirets et underscores par des espaces
     let name = name.replace("-", " ").replace("_", " ");
-    
+
     // Capitaliser chaque mot
     name.split_whitespace()
         .map(|word| {
@@ -124,4 +128,3 @@ mod tests {
         );
     }
 }
-

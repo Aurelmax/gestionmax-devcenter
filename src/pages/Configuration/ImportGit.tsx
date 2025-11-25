@@ -7,13 +7,14 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Loader2, GitBranch, CheckCircle2, AlertCircle } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { cloneGitRepo, autoscanProject } from "@/lib/autoscan";
-import { addProject } from "@/lib/projectManager";
-import { Project } from "@/types/Project";
+import { addProjectFromScan } from "@/lib/projectManager";
+import { ProjectScanResult } from "@/types/Project";
+import AutoScanSummary from "@/components/AutoScanSummary";
 
 export default function ImportGit() {
   const [gitUrl, setGitUrl] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [scannedProject, setScannedProject] = useState<Project | null>(null);
+  const [scanData, setScanData] = useState<{ rootPath: string; result: ProjectScanResult } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -30,7 +31,7 @@ export default function ImportGit() {
 
     setIsLoading(true);
     setError(null);
-    setScannedProject(null);
+    setScanData(null);
 
     try {
       // Étape 1: Cloner le dépôt
@@ -47,14 +48,14 @@ export default function ImportGit() {
         description: "Analyse de la structure du projet",
       });
 
-      const project = await autoscanProject(clonedPath);
+      const result = await autoscanProject(clonedPath);
 
       // Étape 3: Afficher le résumé
-      setScannedProject(project);
+      setScanData({ rootPath: clonedPath, result });
 
       toast({
         title: "Scan terminé",
-        description: `Projet "${project.name}" détecté avec succès`,
+        description: `Projet "${result.name}" détecté avec succès`,
       });
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : "Erreur inconnue";
@@ -70,16 +71,16 @@ export default function ImportGit() {
   };
 
   const handleAddProject = async () => {
-    if (!scannedProject) return;
+    if (!scanData) return;
 
     setIsLoading(true);
 
     try {
-      await addProject(scannedProject);
+      await addProjectFromScan(scanData.result, scanData.rootPath);
 
       toast({
         title: "Projet ajouté",
-        description: `Le projet "${scannedProject.name}" a été ajouté avec succès`,
+        description: `Le projet "${scanData.result.name}" a été ajouté avec succès`,
       });
 
       // Rediriger vers le Dashboard
@@ -156,7 +157,7 @@ export default function ImportGit() {
         </CardContent>
       </Card>
 
-      {scannedProject && (
+      {scanData && (
         <Card className="border-green-500/50">
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -168,37 +169,7 @@ export default function ImportGit() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="space-y-2">
-              <div>
-                <Label className="text-sm font-semibold">Nom du projet</Label>
-                <p className="text-sm text-muted-foreground">{scannedProject.name}</p>
-              </div>
-              <div>
-                <Label className="text-sm font-semibold">Backend</Label>
-                <p className="text-sm text-muted-foreground">
-                  {scannedProject.services.backend ? "✅ Détecté" : "❌ Non détecté"}
-                </p>
-              </div>
-              <div>
-                <Label className="text-sm font-semibold">Frontend</Label>
-                <p className="text-sm text-muted-foreground">
-                  {scannedProject.services.frontend ? "✅ Détecté" : "❌ Non détecté"}
-                </p>
-              </div>
-              <div>
-                <Label className="text-sm font-semibold">Tunnel SSH</Label>
-                <p className="text-sm text-muted-foreground">
-                  {scannedProject.services.tunnel ? "✅ Détecté" : "❌ Non détecté"}
-                </p>
-              </div>
-              <div>
-                <Label className="text-sm font-semibold">Netdata</Label>
-                <p className="text-sm text-muted-foreground">
-                  {scannedProject.services.netdata ? "✅ Configuré" : "❌ Non configuré"}
-                </p>
-              </div>
-            </div>
-
+            <AutoScanSummary scan={scanData.result} />
             <Button
               onClick={handleAddProject}
               disabled={isLoading}

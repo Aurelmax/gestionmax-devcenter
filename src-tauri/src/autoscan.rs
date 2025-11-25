@@ -1,9 +1,12 @@
+#![allow(dead_code)]
+#![allow(non_snake_case)]
+
+use chrono::Utc;
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use regex::Regex;
-
-use crate::projects::{Project, ProjectCommand, ProjectServices};
 
 /// Liste des dossiers à ignorer lors du scan
 const IGNORE_DIRS: &[&str] = &[
@@ -23,7 +26,102 @@ const IGNORE_DIRS: &[&str] = &[
 
 /// Vérifie si un dossier doit être ignoré
 fn should_ignore_dir(dir_name: &str) -> bool {
-    IGNORE_DIRS.iter().any(|&ignore| dir_name == ignore || dir_name.starts_with(ignore))
+    IGNORE_DIRS
+        .iter()
+        .any(|&ignore| dir_name == ignore || dir_name.starts_with(ignore))
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ScanScript {
+    pub start: String,
+    pub stop: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct NetdataScript {
+    pub start: String,
+    pub stop: Option<String>,
+    pub port: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectScanScripts {
+    pub tunnel: Option<ScanScript>,
+    pub backend: Option<ScanScript>,
+    pub frontend: Option<ScanScript>,
+    pub netdata: NetdataScript,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Ports {
+    pub backend: u16,
+    pub frontend: u16,
+}
+
+#[allow(dead_code, non_snake_case)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Tunnel {
+    pub enabled: bool,
+    pub host: String,
+    pub user: String,
+    pub port: u16,
+    #[serde(rename = "privateKey")]
+    pub private_key: String,
+    #[serde(rename = "localMongo")]
+    pub local_mongo: u16,
+    #[serde(rename = "remoteMongo")]
+    pub remote_mongo: u16,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectCommands {
+    pub backend: Option<String>,
+    pub frontend: Option<String>,
+    pub tunnel: Option<String>,
+    pub netdata: Option<String>,
+}
+
+#[allow(dead_code, non_snake_case)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectV3 {
+    pub id: String,
+    pub name: String,
+
+    #[serde(rename = "rootPath")]
+    pub root_path: String,
+    #[serde(rename = "backendPath")]
+    pub backend_path: String,
+    #[serde(rename = "frontendPath")]
+    pub frontend_path: String,
+
+    pub ports: Ports,
+
+    pub tunnel: Option<Tunnel>,
+
+    #[serde(rename = "commands")]
+    #[serde(default)]
+    pub commands: Option<ProjectCommands>,
+
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectScanResult {
+    pub name: String,
+    pub backend_path: Option<String>,
+    pub backend_port: Option<u16>,
+    pub backend_start: Option<String>,
+    pub backend_stop: Option<String>,
+    pub frontend_path: Option<String>,
+    pub frontend_port: Option<u16>,
+    pub frontend_start: Option<String>,
+    pub frontend_stop: Option<String>,
+    pub scripts_path: Option<String>,
+    pub scripts: ProjectScanScripts,
+    pub warnings: Vec<String>,
 }
 
 /// Ouvre un dialogue pour choisir un dossier de projet
@@ -35,52 +133,98 @@ pub async fn pick_project_folder() -> Result<String, String> {
         .arg("--directory")
         .arg("--title=Choisir le dossier du projet")
         .output()
-        .map_err(|e| format!("Failed to open file picker: {}. Install zenity: sudo apt install zenity", e))?;
-    
+        .map_err(|e| {
+            format!(
+                "Failed to open file picker: {}. Install zenity: sudo apt install zenity",
+                e
+            )
+        })?;
+
     if !output.status.success() {
         return Err("File picker cancelled".to_string());
     }
-    
-    let path = String::from_utf8(output.stdout)
-        .map_err(|e| format!("Failed to parse path: {}", e))?;
-    
+
+    let path =
+        String::from_utf8(output.stdout).map_err(|e| format!("Failed to parse path: {}", e))?;
+
     Ok(path.trim().to_string())
 }
 
 /// Détecte automatiquement la structure d'un projet (AutoScan v2 - Monorepo)
 #[tauri::command]
-pub async fn autoscan_project(root_path: String) -> Result<Project, String> {
+pub async fn autoscan_project(root_path: String) -> Result<ProjectScanResult, String> {
     let root = PathBuf::from(&root_path);
-    
+
     if !root.exists() {
         return Err(format!("Path does not exist: {}", root_path));
     }
-    
-    // Détecter le nom du projet depuis le nom du dossier
-    let project_name = root
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("Unknown Project")
-        .to_string();
-    
-    // Détecter backend (recherche récursive avec ignore list)
+
+    let mut warnings = Vec::new();
+
+    let project_name = format_project_name(
+        root.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("Projet"),
+    );
+
     let backend_path = detect_backend_v2(&root, 0)?;
-    
-    // Détecter frontend (recherche récursive avec ignore list)
+    if backend_path.is_none() {
+        warnings.push("Backend Payload non détecté".to_string());
+    }
+    let backend_port = match backend_path.as_ref() {
+        Some(path) => detect_backend_port(Path::new(path))?.or(Some(3010)),
+        None => None,
+    };
+
     let frontend_path = detect_frontend_v2(&root, 0)?;
-    
-    // Détecter scripts (recherche récursive avec ignore list)
-    let scripts_path = detect_scripts_v2(&root, 0)?;
-    
-    // Détecter les services
-    let services = detect_services(&root, &backend_path, &frontend_path, &scripts_path)?;
-    
-    Ok(Project {
+    if frontend_path.is_none() {
+        warnings.push("Frontend Next.js non détecté".to_string());
+    }
+    let frontend_port = match frontend_path.as_ref() {
+        Some(path) => detect_frontend_port(Path::new(path))?.or(Some(3000)),
+        None => None,
+    };
+
+    let scripts_detection = detect_scripts_info(&root)?;
+    if scripts_detection.path.is_none() {
+        warnings.push("Dossier scripts non détecté (scripts/)".to_string());
+    }
+    warnings.extend(scripts_detection.warnings.clone());
+
+    let backend_start = scripts_detection
+        .scripts
+        .backend
+        .as_ref()
+        .map(|s| s.start.clone());
+    let backend_stop = scripts_detection
+        .scripts
+        .backend
+        .as_ref()
+        .and_then(|s| s.stop.clone());
+    let frontend_start = scripts_detection
+        .scripts
+        .frontend
+        .as_ref()
+        .map(|s| s.start.clone());
+    let frontend_stop = scripts_detection
+        .scripts
+        .frontend
+        .as_ref()
+        .and_then(|s| s.stop.clone());
+
+    Ok(ProjectScanResult {
         name: project_name,
-        backend_path: backend_path.unwrap_or_else(|| root_path.clone()),
-        frontend_path: frontend_path.unwrap_or_else(|| root_path.clone()),
-        scripts_path: scripts_path.unwrap_or_else(|| root.join("scripts").to_string_lossy().to_string()),
-        services,
+        backend_path,
+        backend_port,
+        backend_start,
+        backend_stop,
+        frontend_path,
+        frontend_port,
+        frontend_start,
+        frontend_stop,
+        scripts_path: scripts_detection.path,
+        scripts: scripts_detection.scripts,
+        warnings,
     })
 }
 
@@ -90,18 +234,18 @@ fn detect_backend_v2(root: &Path, depth: u32) -> Result<Option<String>, String> 
     if depth > 2 {
         return Ok(None);
     }
-    
+
     // Vérifier si le root lui-même est un backend Payload
     let package_json = root.join("package.json");
     let payload_config = root.join("payload.config.ts");
     let src_dir = root.join("src");
-    
+
     if package_json.exists() && (payload_config.exists() || src_dir.exists()) {
         // Vérifier si c'est vraiment Payload
         if payload_config.exists() {
             return Ok(Some(root.to_string_lossy().to_string()));
         }
-        
+
         // Vérifier dans package.json
         if let Ok(content) = fs::read_to_string(&package_json) {
             if content.contains("payload") || content.contains("@payloadcms") {
@@ -109,23 +253,21 @@ fn detect_backend_v2(root: &Path, depth: u32) -> Result<Option<String>, String> 
             }
         }
     }
-    
+
     // Rechercher récursivement dans les sous-dossiers
     if let Ok(entries) = fs::read_dir(root) {
         for entry in entries {
             if let Ok(entry) = entry {
                 let path = entry.path();
-                
+
                 if path.is_dir() {
-                    let dir_name = path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
-                    
+                    let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
                     // Ignorer les dossiers parasites
                     if should_ignore_dir(dir_name) {
                         continue;
                     }
-                    
+
                     // Rechercher récursivement
                     if let Ok(Some(backend_path)) = detect_backend_v2(&path, depth + 1) {
                         return Ok(Some(backend_path));
@@ -134,7 +276,7 @@ fn detect_backend_v2(root: &Path, depth: u32) -> Result<Option<String>, String> 
             }
         }
     }
-    
+
     Ok(None)
 }
 
@@ -144,36 +286,32 @@ fn detect_frontend_v2(root: &Path, depth: u32) -> Result<Option<String>, String>
     if depth > 2 {
         return Ok(None);
     }
-    
+
     // Vérifier si le root lui-même est un frontend Next.js
     let package_json = root.join("package.json");
     let next_config = root.join("next.config.js");
-    
+
     if package_json.exists() {
         if let Ok(content) = fs::read_to_string(&package_json) {
             if content.contains("\"next\"") || content.contains("nextjs") {
                 // Ignorer les backups
-                let dir_name = root.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
-                
+                let dir_name = root.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
                 if !should_ignore_dir(dir_name) {
                     return Ok(Some(root.to_string_lossy().to_string()));
                 }
             }
         }
     }
-    
+
     // Vérifier next.config.js
     if next_config.exists() {
         let package_json = root.join("package.json");
         if package_json.exists() {
             if let Ok(content) = fs::read_to_string(&package_json) {
                 if content.contains("\"next\"") {
-                    let dir_name = root.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
-                    
+                    let dir_name = root.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
                     if !should_ignore_dir(dir_name) {
                         return Ok(Some(root.to_string_lossy().to_string()));
                     }
@@ -181,23 +319,21 @@ fn detect_frontend_v2(root: &Path, depth: u32) -> Result<Option<String>, String>
             }
         }
     }
-    
+
     // Rechercher récursivement dans les sous-dossiers
     if let Ok(entries) = fs::read_dir(root) {
         for entry in entries {
             if let Ok(entry) = entry {
                 let path = entry.path();
-                
+
                 if path.is_dir() {
-                    let dir_name = path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
-                    
+                    let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
                     // Ignorer les dossiers parasites
                     if should_ignore_dir(dir_name) {
                         continue;
                     }
-                    
+
                     // Rechercher récursivement
                     if let Ok(Some(frontend_path)) = detect_frontend_v2(&path, depth + 1) {
                         return Ok(Some(frontend_path));
@@ -206,7 +342,7 @@ fn detect_frontend_v2(root: &Path, depth: u32) -> Result<Option<String>, String>
             }
         }
     }
-    
+
     Ok(None)
 }
 
@@ -216,10 +352,10 @@ fn detect_scripts_v2(root: &Path, depth: u32) -> Result<Option<String>, String> 
     if depth > 2 {
         return Ok(None);
     }
-    
+
     // Priorité des dossiers scripts
-    let scripts_paths = vec!["scripts", "scripts/dev-tools", "tools", "dev"];
-    
+    let scripts_paths = vec!["scripts", "tools", "dev"];
+
     // Vérifier dans le root
     for dir_name in &scripts_paths {
         let scripts_path = root.join(dir_name);
@@ -230,30 +366,31 @@ fn detect_scripts_v2(root: &Path, depth: u32) -> Result<Option<String>, String> 
             }
         }
     }
-    
+
     // Rechercher récursivement dans les sous-dossiers
     if let Ok(entries) = fs::read_dir(root) {
         for entry in entries {
             if let Ok(entry) = entry {
                 let path = entry.path();
-                
+
                 if path.is_dir() {
-                    let dir_name = path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("");
-                    
+                    let dir_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
                     // Ignorer les dossiers parasites
                     if should_ignore_dir(dir_name) {
                         continue;
                     }
-                    
+
                     // Vérifier si c'est un dossier scripts
-                    if scripts_paths.iter().any(|&s| dir_name == s || dir_name.contains(s)) {
+                    if scripts_paths
+                        .iter()
+                        .any(|&s| dir_name == s || dir_name.contains(s))
+                    {
                         if has_shell_scripts(&path) {
                             return Ok(Some(path.to_string_lossy().to_string()));
                         }
                     }
-                    
+
                     // Rechercher récursivement
                     if let Ok(Some(scripts_path)) = detect_scripts_v2(&path, depth + 1) {
                         return Ok(Some(scripts_path));
@@ -262,17 +399,7 @@ fn detect_scripts_v2(root: &Path, depth: u32) -> Result<Option<String>, String> 
             }
         }
     }
-    
-    // Chercher dans le home directory en dernier recours
-    if depth == 0 {
-        if let Ok(home) = std::env::var("HOME") {
-            let home_scripts = PathBuf::from(home).join("scripts").join("dev-tools");
-            if home_scripts.exists() && has_shell_scripts(&home_scripts) {
-                return Ok(Some(home_scripts.to_string_lossy().to_string()));
-            }
-        }
-    }
-    
+
     Ok(None)
 }
 
@@ -295,145 +422,138 @@ fn has_shell_scripts(path: &Path) -> bool {
     false
 }
 
-/// Détecte tous les services (tunnel, backend, frontend, netdata)
-fn detect_services(
-    root: &Path,
-    backend_path: &Option<String>,
-    frontend_path: &Option<String>,
-    scripts_path: &Option<String>,
-) -> Result<ProjectServices, String> {
-    let scripts = scripts_path.as_ref()
-        .map(|p| PathBuf::from(p))
-        .unwrap_or_else(|| root.join("scripts"));
-    
-    // Détecter Tunnel SSH
-    let tunnel = detect_tunnel(&scripts)?;
-    
-    // Détecter Backend
-    let backend = if let Some(ref bp) = backend_path {
-        detect_backend_service(&PathBuf::from(bp), &scripts)?
-    } else {
-        None
-    };
-    
-    // Détecter Frontend
-    let frontend = if let Some(ref fp) = frontend_path {
-        detect_frontend_service(&PathBuf::from(fp), &scripts)?
-    } else {
-        None
-    };
-    
-    // Netdata est toujours fixe
-    let netdata = Some(ProjectCommand {
-        start: "netdata-on.sh".to_string(),
-        stop: Some("netdata-off.sh".to_string()),
-        port: Some(19999),
+struct ScriptsDetection {
+    path: Option<String>,
+    scripts: ProjectScanScripts,
+    warnings: Vec<String>,
+}
+
+const TUNNEL_START_CANDIDATES: &[&str] = &[
+    "tunnel-on.sh",
+    "tunnel.sh",
+    "ssh-tunnel.sh",
+    "dev-tunnel.sh",
+];
+const TUNNEL_STOP_CANDIDATES: &[&str] = &["tunnel-off.sh", "tunnel-stop.sh", "ssh-tunnel-off.sh"];
+const BACKEND_START_CANDIDATES: &[&str] = &[
+    "backend-on.sh",
+    "start-backend.sh",
+    "start-payload.sh",
+    "start-dev-backend.sh",
+];
+const BACKEND_STOP_CANDIDATES: &[&str] = &["backend-off.sh", "stop-backend.sh"];
+const FRONTEND_START_CANDIDATES: &[&str] = &[
+    "frontend-on.sh",
+    "start-frontend.sh",
+    "start-web.sh",
+    "start-dev-frontend.sh",
+];
+const FRONTEND_STOP_CANDIDATES: &[&str] = &["frontend-off.sh", "stop-frontend.sh"];
+
+fn detect_scripts_info(root: &Path) -> Result<ScriptsDetection, String> {
+    let scripts_path = detect_scripts_v2(root, 0)?;
+    let mut warnings = Vec::new();
+
+    let tunnel = scripts_path.as_ref().and_then(|path| {
+        detect_script_pair(
+            Path::new(path),
+            TUNNEL_START_CANDIDATES,
+            TUNNEL_STOP_CANDIDATES,
+        )
     });
-    
-    Ok(ProjectServices {
+    if tunnel.is_none() {
+        warnings.push("Scripts tunnel (tunnel-on/off.sh) non détectés".to_string());
+    }
+
+    let backend = scripts_path.as_ref().and_then(|path| {
+        detect_script_pair(
+            Path::new(path),
+            BACKEND_START_CANDIDATES,
+            BACKEND_STOP_CANDIDATES,
+        )
+    });
+    if backend.is_none() {
+        warnings.push("Scripts backend (backend-on/off.sh) non détectés".to_string());
+    }
+
+    let frontend = scripts_path.as_ref().and_then(|path| {
+        detect_script_pair(
+            Path::new(path),
+            FRONTEND_START_CANDIDATES,
+            FRONTEND_STOP_CANDIDATES,
+        )
+    });
+    if frontend.is_none() {
+        warnings.push("Scripts frontend (frontend-on/off.sh) non détectés".to_string());
+    }
+
+    let scripts = ProjectScanScripts {
         tunnel,
         backend,
         frontend,
-        netdata,
+        netdata: NetdataScript {
+            start: "netdata-on.sh".to_string(),
+            stop: Some("netdata-off.sh".to_string()),
+            port: 19999,
+        },
+    };
+
+    Ok(ScriptsDetection {
+        path: scripts_path,
+        scripts,
+        warnings,
     })
 }
 
-/// Détecte le service Tunnel SSH (v2 - recherche par nom contenant tunnel/ssh)
-fn detect_tunnel(scripts_path: &Path) -> Result<Option<ProjectCommand>, String> {
-    // Rechercher tous les fichiers .sh dans le dossier scripts
-    if let Ok(entries) = fs::read_dir(scripts_path) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                let path = entry.path();
-                
-                if path.is_file() {
-                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                        let file_name_lower = file_name.to_lowercase();
-                        
-                        // Un script est tunnel si le nom contient tunnel, ssh, ou dev-tunnel
-                        if file_name_lower.contains("tunnel") || 
-                           file_name_lower.contains("ssh") ||
-                           file_name_lower.contains("dev-tunnel") {
-                            
-                            // Chercher un script stop correspondant
-                            let stop = find_stop_script(scripts_path, file_name);
-                            
-                            return Ok(Some(ProjectCommand {
-                                start: file_name.to_string(),
-                                stop,
-                                port: None,
-                            }));
-                        }
-                    }
-                }
-            }
-        }
+fn detect_script_pair(
+    dir: &Path,
+    start_candidates: &[&str],
+    stop_candidates: &[&str],
+) -> Option<ScanScript> {
+    if !dir.exists() {
+        return None;
     }
-    
-    Ok(None)
+
+    let start = find_script(dir, start_candidates)?;
+    let stop = find_script(dir, stop_candidates);
+
+    Some(ScanScript { start, stop })
 }
 
-/// Trouve un script stop correspondant à un script start
-fn find_stop_script(scripts_path: &Path, start_script: &str) -> Option<String> {
-    let start_lower = start_script.to_lowercase();
-    
-    // Patterns de scripts stop
-    let stop_patterns = vec![
-        start_lower.replace(".sh", "-off.sh"),
-        start_lower.replace(".sh", "-stop.sh"),
-        start_lower.replace("tunnel", "tunnel-off"),
-        start_lower.replace("ssh", "ssh-off"),
-    ];
-    
-    if let Ok(entries) = fs::read_dir(scripts_path) {
-        for entry in entries {
-            if let Ok(entry) = entry {
-                if let Some(file_name) = entry.path().file_name().and_then(|n| n.to_str()) {
-                    let file_name_lower = file_name.to_lowercase();
-                    
-                    for pattern in &stop_patterns {
-                        if file_name_lower.contains(pattern) || file_name_lower == *pattern {
-                            return Some(file_name.to_string());
-                        }
-                    }
+fn find_script(dir: &Path, candidates: &[&str]) -> Option<String> {
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if entry.path().is_file() && name.ends_with(".sh") {
+                    files.push(name.to_string());
                 }
             }
         }
     }
-    
+
+    if files.is_empty() {
+        return None;
+    }
+
+    for candidate in candidates {
+        if let Some(found) = files
+            .iter()
+            .find(|name| name.eq_ignore_ascii_case(candidate))
+        {
+            return Some(found.clone());
+        }
+    }
+
+    let lower_candidates: Vec<String> = candidates.iter().map(|c| c.to_lowercase()).collect();
+    for name in &files {
+        let lower = name.to_lowercase();
+        if lower_candidates.iter().any(|cand| lower.contains(cand)) {
+            return Some(name.clone());
+        }
+    }
+
     None
-}
-
-/// Détecte le service Backend avec son port et script
-fn detect_backend_service(backend_path: &Path, scripts_path: &Path) -> Result<Option<ProjectCommand>, String> {
-    // Détecter le script de démarrage
-    let start_scripts = vec![
-        "start-dev.sh backend",
-        "start-backend.sh",
-        "start-payload.sh",
-        "dev-backend.sh",
-    ];
-    
-    let mut start_command = None;
-    for script in &start_scripts {
-        let script_path = scripts_path.join(script.split_whitespace().next().unwrap());
-        if script_path.exists() {
-            start_command = Some(script.to_string());
-            break;
-        }
-    }
-    
-    // Si aucun script trouvé, utiliser npm run dev
-    let start = start_command.unwrap_or_else(|| "npm run dev".to_string());
-    
-    // Détecter le port
-    let port = detect_backend_port(backend_path)?;
-    
-    Ok(Some(ProjectCommand {
-        start,
-        stop: None,
-        port,
-    }))
 }
 
 /// Détecte le port du backend
@@ -442,12 +562,14 @@ fn detect_backend_port(backend_path: &Path) -> Result<Option<u16>, String> {
     let env_file = backend_path.join(".env");
     if env_file.exists() {
         if let Ok(content) = fs::read_to_string(&env_file) {
-            if let Some(port) = extract_port_from_env(&content, vec!["PORT", "BACKEND_PORT", "PAYLOAD_PORT"]) {
+            if let Some(port) =
+                extract_port_from_env(&content, vec!["PORT", "BACKEND_PORT", "PAYLOAD_PORT"])
+            {
                 return Ok(Some(port));
             }
         }
     }
-    
+
     // 2. Chercher dans payload.config.ts
     let config_file = backend_path.join("payload.config.ts");
     if config_file.exists() {
@@ -457,50 +579,21 @@ fn detect_backend_port(backend_path: &Path) -> Result<Option<u16>, String> {
             }
         }
     }
-    
+
     // 3. Chercher dans package.json
     let package_json = backend_path.join("package.json");
     if package_json.exists() {
         if let Ok(content) = fs::read_to_string(&package_json) {
-            if let Some(port) = extract_port_from_regex(&content, r#""dev":\s*"payload[^"]*--port\s+(\d+)"#) {
+            if let Some(port) =
+                extract_port_from_regex(&content, r#""dev":\s*"payload[^"]*--port\s+(\d+)"#)
+            {
                 return Ok(Some(port));
             }
         }
     }
-    
+
     // Port par défaut pour Payload
     Ok(Some(3010))
-}
-
-/// Détecte le service Frontend avec son port et script
-fn detect_frontend_service(frontend_path: &Path, scripts_path: &Path) -> Result<Option<ProjectCommand>, String> {
-    // Détecter le script de démarrage
-    let start_scripts = vec![
-        "start-dev.sh frontend",
-        "start-frontend.sh",
-        "dev-frontend.sh",
-    ];
-    
-    let mut start_command = None;
-    for script in &start_scripts {
-        let script_path = scripts_path.join(script.split_whitespace().next().unwrap());
-        if script_path.exists() {
-            start_command = Some(script.to_string());
-            break;
-        }
-    }
-    
-    // Si aucun script trouvé, utiliser next dev
-    let start = start_command.unwrap_or_else(|| "next dev".to_string());
-    
-    // Détecter le port
-    let port = detect_frontend_port(frontend_path)?;
-    
-    Ok(Some(ProjectCommand {
-        start,
-        stop: None,
-        port,
-    }))
 }
 
 /// Détecte le port du frontend
@@ -514,7 +607,7 @@ fn detect_frontend_port(frontend_path: &Path) -> Result<Option<u16>, String> {
             }
         }
     }
-    
+
     // 2. Chercher dans next.config.js
     let config_file = frontend_path.join("next.config.js");
     if config_file.exists() {
@@ -524,17 +617,19 @@ fn detect_frontend_port(frontend_path: &Path) -> Result<Option<u16>, String> {
             }
         }
     }
-    
+
     // 3. Chercher dans package.json
     let package_json = frontend_path.join("package.json");
     if package_json.exists() {
         if let Ok(content) = fs::read_to_string(&package_json) {
-            if let Some(port) = extract_port_from_regex(&content, r#""dev":\s*"next dev[^"]*-p\s+(\d+)"#) {
+            if let Some(port) =
+                extract_port_from_regex(&content, r#""dev":\s*"next dev[^"]*-p\s+(\d+)"#)
+            {
                 return Ok(Some(port));
             }
         }
     }
-    
+
     // Port par défaut pour Next.js
     Ok(Some(3000))
 }
@@ -566,3 +661,77 @@ fn extract_port_from_regex(content: &str, pattern: &str) -> Option<u16> {
     None
 }
 
+fn format_project_name(name: &str) -> String {
+    let normalized = name.replace(['-', '_'], " ");
+    normalized
+        .split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// ─────────────────────────────────────────────
+//   V3 Project Autoscan
+// ─────────────────────────────────────────────
+
+#[allow(dead_code)]
+#[tauri::command]
+pub async fn autoscan_project_v3(root_path: String) -> Result<ProjectV3, String> {
+    let root = PathBuf::from(&root_path);
+
+    if !root.exists() {
+        return Err("Root path does not exist".into());
+    }
+
+    let name = root
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("Project")
+        .to_string();
+
+    let backend = ["backend", "back", "api"]
+        .iter()
+        .map(|d| root.join(d))
+        .find(|p| p.exists());
+
+    let frontend = ["frontend", "front", "web", "app"]
+        .iter()
+        .map(|d| root.join(d))
+        .find(|p| p.exists());
+
+    let _warnings = {
+        let mut w = Vec::new();
+        if backend.is_none() {
+            w.push("Backend not found".to_string());
+        }
+        if frontend.is_none() {
+            w.push("Frontend not found".to_string());
+        }
+        w
+    };
+
+    Ok(ProjectV3 {
+        id: name.clone(),
+        name,
+        root_path,
+        backend_path: backend
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        frontend_path: frontend
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default(),
+        ports: Ports {
+            backend: 3010,
+            frontend: 3000,
+        },
+        tunnel: None,
+        commands: None,
+        created_at: Utc::now().to_rfc3339(),
+    })
+}

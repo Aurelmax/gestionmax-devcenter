@@ -4,14 +4,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import AutoScanSummary from "@/components/AutoScanSummary";
 import { pickProjectFolder, autoscanProject } from "@/lib/autoscan";
-import { addProject } from "@/lib/projectManager";
-import { Project } from "@/types/Project";
+import { addProjectFromScan } from "@/lib/projectManager";
+import { ProjectScanResult } from "@/types/Project";
 import { useToast } from "@/components/ui/use-toast";
 import { useNavigate } from "react-router-dom";
 
 export default function AutoScanProject() {
   const [isScanning, setIsScanning] = useState(false);
-  const [scannedProject, setScannedProject] = useState<Project | null>(null);
+  const [scanData, setScanData] = useState<{ rootPath: string; result: ProjectScanResult } | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -19,7 +19,7 @@ export default function AutoScanProject() {
   const handlePickFolder = async () => {
     try {
       setIsScanning(true);
-      setScannedProject(null);
+      setScanData(null);
 
       // 1. Choisir le dossier
       const folderPath = await pickProjectFolder();
@@ -35,12 +35,12 @@ export default function AutoScanProject() {
       }
 
       // 2. Scanner le projet
-      const project = await autoscanProject(folderPath);
-      setScannedProject(project);
+      const result = await autoscanProject(folderPath);
+      setScanData({ rootPath: folderPath, result });
 
       toast({
         title: "Projet scanné",
-        description: `Le projet "${project.name}" a été analysé avec succès.`,
+        description: `Le projet "${result.name}" a été analysé avec succès.`,
       });
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : "Unknown error";
@@ -55,22 +55,22 @@ export default function AutoScanProject() {
   };
 
   const handleAddProject = async () => {
-    if (!scannedProject) return;
+    if (!scanData) return;
 
     try {
       setIsAdding(true);
 
       // Vérifier si le projet existe déjà
       try {
-        await addProject(scannedProject);
+        await addProjectFromScan(scanData.result, scanData.rootPath);
         
         toast({
           title: "Projet ajouté",
-          description: `Le projet "${scannedProject.name}" a été ajouté avec succès.`,
+          description: `Le projet "${scanData.result.name}" a été ajouté avec succès.`,
         });
 
         // Réinitialiser et recharger
-        setScannedProject(null);
+        setScanData(null);
         
         // Optionnel : rediriger vers Project Manager après 1 seconde
         setTimeout(() => {
@@ -81,7 +81,7 @@ export default function AutoScanProject() {
         if (errorMsg.includes("already exists")) {
           toast({
             title: "Projet existant",
-            description: `Un projet avec le nom "${scannedProject.name}" existe déjà. Modifiez-le dans Project Manager.`,
+            description: `Un projet avec le nom "${scanData.result.name}" existe déjà. Modifiez-le dans Project Manager.`,
             variant: "destructive",
           });
         } else {
@@ -158,7 +158,7 @@ export default function AutoScanProject() {
           )}
         </Button>
 
-        {scannedProject && (
+        {scanData && (
           <Button
             onClick={handleAddProject}
             disabled={isAdding}
@@ -182,14 +182,14 @@ export default function AutoScanProject() {
       </div>
 
       {/* Résumé du projet scanné */}
-      {scannedProject && (
+      {scanData && (
         <div className="space-y-4">
-          <AutoScanSummary project={scannedProject} />
+          <AutoScanSummary scan={scanData.result} />
           
           {/* Bouton pour scanner un autre projet */}
           <div className="flex justify-end">
             <Button
-              onClick={() => setScannedProject(null)}
+              onClick={() => setScanData(null)}
               variant="outline"
               size="sm"
             >
@@ -200,7 +200,7 @@ export default function AutoScanProject() {
       )}
 
       {/* Message si aucun projet scanné */}
-      {!scannedProject && !isScanning && (
+      {!scanData && !isScanning && (
         <Card className="bg-gray-800/30 border-gray-700/50">
           <CardContent className="pt-6">
             <div className="flex flex-col items-center justify-center py-8 text-center">

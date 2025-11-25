@@ -75,7 +75,41 @@ await invoke("ma_commande", { param: "valeur" });
 
 ---
 
-## 4. Ajouter un service dans le dashboard
+## 4. Scripts embarqués
+
+Les scripts de gestion des services sont maintenant embarqués dans le bundle Tauri et se trouvent dans `src-tauri/resources/scripts/` :
+
+- `tunnel-on.sh` / `tunnel-off.sh` : Gestion du tunnel SSH
+- `backend-on.sh` / `backend-off.sh` : Gestion du backend Payload
+- `frontend-on.sh` / `frontend-off.sh` : Gestion du frontend Next.js
+- `netdata-on.sh` / `netdata-off.sh` : Gestion de Netdata
+- `kill-zombies.sh` : Nettoyage des processus zombies
+
+**Important** : Plus besoin de scripts externes dans `~/scripts/dev-tools/`. Tous les scripts sont maintenant autonomes et embarqués dans l'application.
+
+Pour modifier un script :
+1. Éditer le fichier dans `src-tauri/resources/scripts/`
+2. S'assurer qu'il est exécutable (`chmod +x`)
+3. Rebuild l'application
+
+### 4.1. Migration V3 & nouvelles commandes
+
+La V3 interagit avec les services via des commandes Rust dédiées :
+
+| Commande | Action | Retour visible dans le dashboard |
+| --- | --- | --- |
+| `start_service_v3(projectId, service)` | Démarre backend, frontend, tunnel ou Netdata en injectant les `PROJECT_*` variables | objet `{ stdout, stderr, code }` affiché dans les toasts |
+| `stop_service_v3(projectId, service)` | Arrête avec le script OFF associé | objet `{ stdout, stderr, code }` |
+| `status_service_v3(projectId, service)` | Interroge `sysinfo` pour détecter `pnpm/node`, `ssh -N -L …` ou `netdata` | `"RUNNING"` / `"STOPPED"` pour le badge |
+| `kill_zombies_v3()` | Lance `kill-zombies.sh` et tue les processus orphelins | objet `{ stdout, stderr, code }` |
+
+Les scripts doivent toujours faire un `echo` clair (succès ou erreur). Le tunnel repose sur un seul couple `tunnel-on.sh` / `tunnel-off.sh` capable de gérer toutes les commandes SSH, en utilisant les variables `PROJECT_TUNNEL_HOST`, `PROJECT_TUNNEL_USER`, `PROJECT_TUNNEL_PORT`, `PROJECT_LOCAL_MONGO`, `PROJECT_REMOTE_MONGO` et `PROJECT_TUNNEL_KEY`.
+
+Les projets V3 supportent maintenant un objet `commands` pour préciser une commande personnalisée (ex. `pnpm dev:backend`). Lorsque tu sauvegardes un projet dans le Project Manager, veille à remplir la section Tunnel (host/user/ports/key) pour que `start_service_v3` injecte les bons `PROJECT_*`.
+
+Chaque bouton Start/Stop rafraîchit automatiquement le statut (polling 1,5 s) et affiche les logs du script dans les toasts (par exemple `vite ELIFECYCLE` en cas d’échec). Si tu veux un log plus complet, copie le `stderr` affiché ou lance la commande à la main (`pnpm dev`) dans le dossier concerné.
+
+## 5. Ajouter un service dans le dashboard
 
 1. Ajouter le type dans `src/lib/commands.ts` :
 

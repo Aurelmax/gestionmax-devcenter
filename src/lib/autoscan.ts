@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Project } from "@/types/Project";
+import { ProjectScanResult } from "@/types/Project";
 
 /**
  * Ouvre un dialogue pour choisir un dossier de projet
@@ -15,9 +15,9 @@ export async function pickProjectFolder(): Promise<string> {
 /**
  * Analyse automatiquement un projet et retourne sa configuration
  */
-export async function autoscanProject(path: string): Promise<Project> {
+export async function autoscanProject(path: string): Promise<ProjectScanResult> {
   try {
-    return await invoke<Project>("autoscan_project", { root_path: path });
+    return await invoke<ProjectScanResult>("autoscan_project", { rootPath: path });
   } catch (error) {
     throw new Error(`Failed to autoscan project: ${error}`);
   }
@@ -28,12 +28,12 @@ export async function autoscanProject(path: string): Promise<Project> {
  */
 export async function cloneGitRepo(url: string, targetDir?: string): Promise<string> {
   try {
-    return await invoke<string>("clone_git_repo", { 
-      url, 
-      target_dir: targetDir 
+    return await invoke<string>("clone_git_repo", {
+      url,
+      targetDir,
     });
   } catch (error) {
-    throw new Error(`Failed to clone Git repository: ${error}`);
+    throw new Error(`Failed to clone repo: ${error}`);
   }
 }
 

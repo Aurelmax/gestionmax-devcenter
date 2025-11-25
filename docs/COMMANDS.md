@@ -181,13 +181,69 @@ await invoke("open_in_vscode", {
 
 ## 📝 11. read_logs
 
-Lit les logs système en temps réel.
+Lit les logs système en temps réel. Utilise `journalctl` (systemd) ou lit depuis `/var/log/syslog` ou `/var/log/messages` en fallback.
 
 ### Appel depuis React
 
 ```typescript
 const logs = await invoke<string>("read_logs");
 ```
+
+### Retour
+
+Retourne les 100 dernières lignes de logs système (depuis les 5 dernières minutes).
+
+---
+
+## 🔧 11.5. check_status
+
+Vérifie le statut complet du système avec des métriques réelles :
+- **CPU** : Utilisation CPU en pourcentage (lu depuis `/proc/stat`)
+- **RAM** : Utilisation mémoire en pourcentage (lu depuis `/proc/meminfo`)
+- **Disk** : Utilisation disque en pourcentage (lu via `df`)
+- **Uptime** : Temps de fonctionnement en secondes (lu depuis `/proc/uptime`)
+- **Services** : Statut des services (tunnel, backend, frontend, netdata)
+
+### Appel depuis React
+
+```typescript
+const status = await invoke<SystemStatus>("check_status");
+```
+
+### Retour
+
+```typescript
+interface SystemStatus {
+  cpu: number;        // Pourcentage d'utilisation CPU (0-100)
+  ram: number;        // Pourcentage d'utilisation RAM (0-100)
+  disk: number;       // Pourcentage d'utilisation disque (0-100)
+  uptime: number;     // Uptime en secondes
+  services: {
+    tunnel: boolean;
+    backend: boolean;
+    frontend: boolean;
+    netdata: boolean;
+  };
+}
+```
+
+---
+
+## ⚡ 11.6. run_command
+
+Exécute une commande système générique de manière sécurisée.
+
+⚠️ **Sécurité** : Les commandes dangereuses sont bloquées (`rm -rf`, `sudo`, `shutdown`, etc.)
+
+### Appel depuis React
+
+```typescript
+const output = await invoke<string>("run_command", { cmd: "ls -la" });
+```
+
+### Retour
+
+Retourne la sortie stdout de la commande, ou une erreur si la commande échoue.
 
 ---
 
@@ -340,7 +396,7 @@ const project = await invoke<Project>("autoscan_project", {
 | `delete_project` | Supprime un projet | ✅ Implémenté |
 | `pick_project_folder` | Ouvre un dialogue de sélection | ✅ Implémenté |
 | `autoscan_project` | Analyse automatique d'un projet | ✅ Implémenté |
-| `run_command` | Exécute une commande générique | 🔄 TODO |
+| `run_command` | Exécute une commande générique | ✅ Implémenté |
 
 ---
 

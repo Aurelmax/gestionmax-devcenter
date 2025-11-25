@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Plus, Pencil, Trash2, RefreshCw, Loader2 } from "lucide-react";
+import { Plus, Pencil, Trash2, RefreshCw, Loader2, ArrowLeft } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +12,7 @@ import {
 } from "@/lib/projectManager";
 import { Project } from "@/types/Project";
 import { useToast } from "@/components/ui/use-toast";
+import { useNavigate } from "react-router-dom";
 
 export default function ProjectManager() {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -19,6 +20,7 @@ export default function ProjectManager() {
   const [editingProject, setEditingProject] = useState<Project | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   const fetchProjects = async () => {
     setIsLoading(true);
@@ -111,11 +113,22 @@ export default function ProjectManager() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-white">Project Manager</h1>
-          <p className="text-sm text-gray-400 mt-1">
-            Gérez vos projets de développement
-          </p>
+        <div className="flex items-center gap-4">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => navigate("/dashboard")}
+            className="text-gray-400 hover:text-white"
+          >
+            <ArrowLeft className="w-4 h-4 mr-2" />
+            Retour au Dashboard
+          </Button>
+          <div>
+            <h1 className="text-2xl font-bold text-white">Project Manager</h1>
+            <p className="text-sm text-gray-400 mt-1">
+              Gérez vos projets de développement
+            </p>
+          </div>
         </div>
         <div className="flex items-center gap-2">
           <Button
@@ -201,7 +214,7 @@ export default function ProjectManager() {
                 <div className="flex flex-wrap gap-1 pt-2 border-t border-gray-700">
                   {project.services.tunnel && (
                     <Badge variant="secondary" className="text-xs">
-                      Tunnel
+                      Tunnel SSH
                     </Badge>
                   )}
                   {project.services.backend && (
@@ -220,14 +233,7 @@ export default function ProjectManager() {
                       )}
                     </Badge>
                   )}
-                  {project.services.netdata && (
-                    <Badge variant="secondary" className="text-xs">
-                      Netdata
-                      {project.services.netdata.port && (
-                        <span className="ml-1">:{project.services.netdata.port}</span>
-                      )}
-                    </Badge>
-                  )}
+                  {/* Netdata n'est plus affiché ici (service global uniquement) */}
                 </div>
               </CardContent>
             </Card>

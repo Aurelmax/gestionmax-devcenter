@@ -255,7 +255,7 @@ export default function ProjectForm({
                   }))
                 }
                 required
-                placeholder="/home/user/scripts/dev-tools"
+                placeholder="Chemin vers les scripts du projet (optionnel)"
               />
             </div>
           </div>
@@ -263,10 +263,15 @@ export default function ProjectForm({
           {/* Services */}
           <div className="space-y-3">
             <Label className="text-base">Services</Label>
+            <p className="text-xs text-gray-400 mb-2">
+              Tunnel SSH : chaque projet a son propre tunnel pour sa base de données
+            </p>
             <ServiceEditor serviceName="tunnel" label="Tunnel SSH" />
             <ServiceEditor serviceName="backend" label="Backend" />
             <ServiceEditor serviceName="frontend" label="Frontend" />
-            <ServiceEditor serviceName="netdata" label="Netdata" />
+            <p className="text-xs text-gray-400 mt-2">
+              Note : Netdata est un service global géré depuis le Dashboard
+            </p>
           </div>
 
           <DialogFooter>

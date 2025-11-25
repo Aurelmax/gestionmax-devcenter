@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LayoutDashboard, Terminal, Settings, Info } from "lucide-react";
+import { LayoutDashboard, Terminal, Settings, Info, BookOpen } from "lucide-react";
 
 export default function Navigation() {
   const navigate = useNavigate();
@@ -11,6 +11,7 @@ export default function Navigation() {
     if (location.pathname === "/logs") return "logs";
     if (location.pathname === "/config") return "config";
     if (location.pathname === "/about") return "about";
+    if (location.pathname === "/docs") return "docs";
     return "dashboard";
   };
 
@@ -35,9 +36,13 @@ export default function Navigation() {
               <Settings className="w-4 h-4 mr-2" />
               Configuration
             </TabsTrigger>
-            <TabsTrigger value="about" className="data-[state=active]:bg-gray-700" disabled>
+            <TabsTrigger value="about" className="data-[state=active]:bg-gray-700">
               <Info className="w-4 h-4 mr-2" />
               À propos
+            </TabsTrigger>
+            <TabsTrigger value="docs" className="data-[state=active]:bg-gray-700">
+              <BookOpen className="w-4 h-4 mr-2" />
+              Documentation
             </TabsTrigger>
           </TabsList>
         </Tabs>

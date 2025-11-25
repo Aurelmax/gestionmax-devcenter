@@ -15,6 +15,20 @@ export interface SystemStatus {
   };
 }
 
+export interface SystemStats {
+  cpu: number;
+  ram: number;
+  disk: number;
+  uptime: number;
+}
+
+export interface SystemStats {
+  cpu: number;
+  ram: number;
+  disk: number;
+  uptime: number;
+}
+
 /**
  * Exécute une commande système via Tauri
  */
@@ -78,6 +92,63 @@ export async function getSystemStatus(): Promise<SystemStatus> {
     return await invoke<SystemStatus>("check_status");
   } catch (error) {
     throw new Error(`Failed to get system status: ${error}`);
+  }
+}
+
+export interface ScriptResult {
+  stdout: string;
+  stderr: string;
+  code: number;
+}
+
+export type ServiceStatus = "RUNNING" | "STOPPED";
+
+export async function startServiceV3(
+  projectId: string,
+  service: ServiceName
+): Promise<ScriptResult> {
+  try {
+    return await invoke<ScriptResult>("start_service_v3", { projectId, service });
+  } catch (error) {
+    throw new Error(`Failed to start ${service}: ${error}`);
+  }
+}
+
+export async function stopServiceV3(
+  projectId: string,
+  service: ServiceName
+): Promise<ScriptResult> {
+  try {
+    return await invoke<ScriptResult>("stop_service_v3", { projectId, service });
+  } catch (error) {
+    throw new Error(`Failed to stop ${service}: ${error}`);
+  }
+}
+
+export async function getServiceStatusV3(
+  projectId: string,
+  service: ServiceName
+): Promise<ServiceStatus> {
+  try {
+    return await invoke<ServiceStatus>("status_service_v3", { projectId, service });
+  } catch (error) {
+    throw new Error(`Failed to get status for ${service}: ${error}`);
+  }
+}
+
+export async function killZombiesV3(): Promise<ScriptResult> {
+  try {
+    return await invoke<ScriptResult>("kill_zombies_v3");
+  } catch (error) {
+    throw new Error(`Failed to kill zombies: ${error}`);
+  }
+}
+
+export async function getSystemStatsV3(): Promise<SystemStats> {
+  try {
+    return await invoke<SystemStats>("get_system_stats_v3");
+  } catch (error) {
+    throw new Error(`Failed to get system stats: ${error}`);
   }
 }
 
