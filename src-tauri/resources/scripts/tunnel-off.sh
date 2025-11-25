@@ -1,30 +1,17 @@
 #!/bin/bash
-# Script pour arrêter le tunnel SSH
-# Ce script est embarqué dans le bundle Tauri
+# Arrêter le tunnel SSH (port 27017)
 
-PROJECT_TUNNEL_HOST="${PROJECT_TUNNEL_HOST:-}"
-PROJECT_TUNNEL_USER="${PROJECT_TUNNEL_USER:-}"
-PROJECT_TUNNEL_PORT="${PROJECT_TUNNEL_PORT:-22}"
-PROJECT_LOCAL_MONGO="${PROJECT_LOCAL_MONGO:-27017}"
-PROJECT_REMOTE_MONGO="${PROJECT_REMOTE_MONGO:-27017}"
+LOCAL_MONGO="${PROJECT_LOCAL_MONGO:-27017}"
 
-echo "Arrêt du tunnel SSH (${PROJECT_LOCAL_MONGO}:${PROJECT_REMOTE_MONGO})..."
+echo "🛑 Fermeture du tunnel SSH sur le port $LOCAL_MONGO..."
 
-PATTERN="ssh.*-L.*${PROJECT_LOCAL_MONGO}:127.0.0.1:${PROJECT_REMOTE_MONGO}"
+PIDS=$(lsof -ti tcp:"$LOCAL_MONGO")
 
-if pkill -f "$PATTERN"; then
-    echo "Processus SSH tué."
+if [ -z "$PIDS" ]; then
+    echo "ℹ️ Aucun tunnel actif sur le port $LOCAL_MONGO."
 else
-    echo "Aucun tunnel spécifique trouvé, tentative d'arrêt global..."
-    pkill -f "ssh.*-L" || true
+    kill -9 $PIDS
+    echo "✔️ Tunnel SSH arrêté."
 fi
 
-sleep 0.5
-
-if pgrep -f "$PATTERN" > /dev/null; then
-    echo "Erreur: Le tunnel SSH est toujours actif."
-    exit 1
-fi
-
-echo "Tunnel SSH arrêté"
 

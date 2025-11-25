@@ -1,42 +1,38 @@
 #!/bin/bash
-# Script pour démarrer le tunnel SSH
-# Ce script est embarqué dans le bundle Tauri
+# Script pour démarrer le tunnel SSH avec Mongo sur 27017
 
-# Configuration via variables d'environnement
 PROJECT_TUNNEL_HOST="${PROJECT_TUNNEL_HOST:-}"
 PROJECT_TUNNEL_USER="${PROJECT_TUNNEL_USER:-}"
 PROJECT_TUNNEL_PORT="${PROJECT_TUNNEL_PORT:-22}"
-PROJECT_LOCAL_MONGO="${PROJECT_LOCAL_MONGO:-27017}"
-PROJECT_REMOTE_MONGO="${PROJECT_REMOTE_MONGO:-27017}"
+
+LOCAL_MONGO="${PROJECT_LOCAL_MONGO:-27017}"
+REMOTE_MONGO="${PROJECT_REMOTE_MONGO:-27017}"
 
 if [ -z "$PROJECT_TUNNEL_HOST" ] || [ -z "$PROJECT_TUNNEL_USER" ]; then
     echo "Erreur: Variables PROJECT_TUNNEL_HOST/PROJECT_TUNNEL_USER manquantes"
     exit 1
 fi
 
-echo "Démarrage du tunnel SSH ($PROJECT_LOCAL_MONGO -> $PROJECT_REMOTE_MONGO via $PROJECT_TUNNEL_HOST)...
-
-Utilisation de la clé SSH ~/.ssh/id_ed25519"
+echo "🔐 Tunnel SSH: localhost:$LOCAL_MONGO → $PROJECT_TUNNEL_HOST:$REMOTE_MONGO"
 
 ssh \
-    -i "$HOME/.ssh/id_ed25519" \
+    -i "$HOME/.ssh/id_ed25519_hetzner" \
     -p "$PROJECT_TUNNEL_PORT" \
     -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null \
-    -o PasswordAuthentication=no \
     -N \
-    -L "${PROJECT_LOCAL_MONGO}:127.0.0.1:${PROJECT_REMOTE_MONGO}" \
+    -L "${LOCAL_MONGO}:127.0.0.1:${REMOTE_MONGO}" \
     "${PROJECT_TUNNEL_USER}@${PROJECT_TUNNEL_HOST}" &
 
 PID=$!
 
 sleep 1
 
-if ps -p "$PID" > /dev/null 2>&1; then
-    echo "Tunnel SSH démarré (PID $PID) sur le port ${PROJECT_LOCAL_MONGO}"
+if ps -p "$PID" >/dev/null 2>&1; then
+    echo "✨ Tunnel SSH actif (PID: $PID)"
     exit 0
 else
-    echo "Erreur: Impossible de démarrer le tunnel SSH"
+    echo "❌ Échec du tunnel SSH"
     exit 1
 fi
 

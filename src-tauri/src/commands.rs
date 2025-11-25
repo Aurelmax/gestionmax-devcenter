@@ -101,6 +101,12 @@ fn run_embedded_script(
     }
 }
 
+fn is_port_listening(port: u16) -> bool {
+    use std::net::TcpListener;
+    // Try to bind - if it fails, port is already in use (listening)
+    TcpListener::bind(format!("127.0.0.1:{}", port)).is_err()
+}
+
 fn build_envs(project: &ProjectV3, service: &str) -> Vec<(String, String)> {
     let mut envs = vec![(
         "PROJECT_ROOT_PATH".to_string(),
@@ -172,28 +178,37 @@ fn build_envs(project: &ProjectV3, service: &str) -> Vec<(String, String)> {
 }
 
 fn status_for_backend(project: &ProjectV3) -> bool {
+    // First check if port is listening
+    if is_port_listening(project.ports.backend) {
+        return true;
+    }
+    
+    // Fallback: check for process
     let mut system = System::new_all();
     system.refresh_all();
     let port = project.ports.backend.to_string();
     system.processes().values().any(|process| {
         let name = process.name().to_ascii_lowercase();
         let cmd = process.cmd().join(" ").to_ascii_lowercase();
-        (name.contains("node") || name.contains("pnpm"))
+        (name.contains("node") || name.contains("pnpm") || name.contains("npm"))
             && cmd.contains(&project.backend_path.to_ascii_lowercase())
-            && cmd.contains(&port)
     })
 }
 
 fn status_for_frontend(project: &ProjectV3) -> bool {
+    // First check if port is listening
+    if is_port_listening(project.ports.frontend) {
+        return true;
+    }
+    
+    // Fallback: check for process
     let mut system = System::new_all();
     system.refresh_all();
-    let port = project.ports.frontend.to_string();
     system.processes().values().any(|process| {
         let name = process.name().to_ascii_lowercase();
         let cmd = process.cmd().join(" ").to_ascii_lowercase();
-        (name.contains("node") || name.contains("pnpm"))
+        (name.contains("node") || name.contains("pnpm") || name.contains("npm"))
             && cmd.contains(&project.frontend_path.to_ascii_lowercase())
-            && cmd.contains(&port)
     })
 }
 

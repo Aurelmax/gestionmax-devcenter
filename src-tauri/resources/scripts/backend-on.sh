@@ -1,14 +1,10 @@
 #!/bin/bash
-# Script pour démarrer le backend Payload
-# Mono-repo: /gestionmaxopps/backend
 
-BACKEND_ROOT="${PROJECT_BACKEND_PATH:-/home/gestionmax-aur-lien/CascadeProjects/gestionmaxopps}"
-BACKEND_DIR="${PROJECT_BACKEND_DIR:-backend}"
-
-WORK_DIR="$BACKEND_ROOT/$BACKEND_DIR"
+# PROJECT_BACKEND_PATH is the full path to the backend directory
+WORK_DIR="${PROJECT_BACKEND_PATH:-/home/gestionmax-aur-lien/CascadeProjects/gestionmaxopps/backend}"
 
 if [ ! -d "$WORK_DIR" ]; then
-    echo "Erreur: Dossier backend introuvable ($WORK_DIR)"
+    echo "Erreur: dossier backend introuvable ($WORK_DIR)"
     exit 1
 fi
 
@@ -19,17 +15,14 @@ if [ ! -f "package.json" ]; then
     exit 1
 fi
 
-echo "Démarrage du backend Payload dans $WORK_DIR..."
+echo "🚀 Démarrage Payload dans $WORK_DIR..."
 
-if command -v pnpm >/dev/null 2>&1; then
-    pnpm dev &
-elif command -v npm >/dev/null 2>&1; then
-    npm run dev &
-else
-    echo "Erreur: pnpm ou npm non trouvé"
-    exit 1
-fi
+# Use pnpm by default, but allow override via PROJECT_BACKEND_COMMAND
+COMMAND="${PROJECT_BACKEND_COMMAND:-pnpm dev}"
 
-echo "Backend Payload démarré"
+$COMMAND &
+echo "Backend Payload démarré avec: $COMMAND"
+
+
 
 
