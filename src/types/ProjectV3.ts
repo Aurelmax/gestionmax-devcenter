@@ -1,3 +1,32 @@
+export interface ServiceConfig {
+  start?: string;
+  stop?: string;
+  port?: number;
+}
+
+export interface TunnelConfig {
+  start?: string;
+  stop?: string;
+  host?: string;
+  user?: string;
+  ssh_key?: string;
+  local_port?: number;
+  remote_port?: number;
+  type?: string;
+}
+
+export interface ProjectEnvironment {
+  backend_env?: Record<string, string>;
+  frontend_env?: Record<string, string>;
+}
+
+export interface ProjectCommands {
+  backend?: string;
+  frontend?: string;
+  tunnel?: string;
+  netdata?: string;
+}
+
 export interface ProjectV3 {
   id: string;
   name: string;
@@ -5,28 +34,20 @@ export interface ProjectV3 {
   rootPath: string;
   backendPath: string;
   frontendPath: string;
+  scriptsPath?: string;
 
   ports: {
     backend: number;
     frontend: number;
   };
 
-  tunnel?: {
-    enabled: boolean;
-    host: string;
-    user: string;
-    port: number;
-    privateKey: string;
-    localMongo: number;
-    remoteMongo: number;
-  };
+  environment?: ProjectEnvironment;
 
-  commands?: {
-    backend?: string;
-    frontend?: string;
-    tunnel?: string;
-    netdata?: string;
-  };
+  backend?: ServiceConfig;
+  frontend?: ServiceConfig;
+  tunnel?: TunnelConfig;
+
+  commands?: ProjectCommands;
 
   createdAt: string;
 }

@@ -14,11 +14,19 @@ if [ -z "$PROJECT_TUNNEL_HOST" ] || [ -z "$PROJECT_TUNNEL_USER" ]; then
     exit 1
 fi
 
-echo "Démarrage du tunnel SSH ($PROJECT_LOCAL_MONGO -> $PROJECT_REMOTE_MONGO via $PROJECT_TUNNEL_HOST)..."
+echo "Démarrage du tunnel SSH ($PROJECT_LOCAL_MONGO -> $PROJECT_REMOTE_MONGO via $PROJECT_TUNNEL_HOST)...
 
-ssh -N -L "${PROJECT_LOCAL_MONGO}:127.0.0.1:${PROJECT_REMOTE_MONGO}" \
-    "${PROJECT_TUNNEL_USER}@${PROJECT_TUNNEL_HOST}" \
-    -p "$PROJECT_TUNNEL_PORT" &
+Utilisation de la clé SSH ~/.ssh/id_ed25519"
+
+ssh \
+    -i "$HOME/.ssh/id_ed25519" \
+    -p "$PROJECT_TUNNEL_PORT" \
+    -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    -o PasswordAuthentication=no \
+    -N \
+    -L "${PROJECT_LOCAL_MONGO}:127.0.0.1:${PROJECT_REMOTE_MONGO}" \
+    "${PROJECT_TUNNEL_USER}@${PROJECT_TUNNEL_HOST}" &
 
 PID=$!
 

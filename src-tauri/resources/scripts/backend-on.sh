@@ -1,47 +1,35 @@
 #!/bin/bash
 # Script pour démarrer le backend Payload
-# Ce script est embarqué dans le bundle Tauri
+# Mono-repo: /gestionmaxopps/backend
 
-# Configuration par défaut
-BACKEND_PATH="${PROJECT_BACKEND_PATH:-$HOME/CascadeProjects}"
+BACKEND_ROOT="${PROJECT_BACKEND_PATH:-/home/gestionmax-aur-lien/CascadeProjects/gestionmaxopps}"
 BACKEND_DIR="${PROJECT_BACKEND_DIR:-backend}"
 
-# Determiner le dossier de travail
-if [ -n "$1" ]; then
-    WORK_DIR="$1"
-else
-    WORK_DIR=$(find "$BACKEND_PATH" -maxdepth 2 -type d -name "backend" -o -name "payload" | head -1)
-fi
+WORK_DIR="$BACKEND_ROOT/$BACKEND_DIR"
 
-if [ -z "$WORK_DIR" ] || [ ! -d "$WORK_DIR" ]; then
+if [ ! -d "$WORK_DIR" ]; then
     echo "Erreur: Dossier backend introuvable ($WORK_DIR)"
     exit 1
 fi
 
-cd "$WORK_DIR" || { echo "Erreur: impossible d'accéder à $WORK_DIR"; exit 1; }
+cd "$WORK_DIR" || exit 1
 
 if [ ! -f "package.json" ]; then
     echo "Erreur: package.json introuvable dans $WORK_DIR"
     exit 1
 fi
 
-echo "Démarrage du backend dans $WORK_DIR..."
+echo "Démarrage du backend Payload dans $WORK_DIR..."
 
-if [ -n "${PROJECT_BACKEND_COMMAND:-}" ]; then
-    echo "Commande personnalisée : $PROJECT_BACKEND_COMMAND"
-    eval "$PROJECT_BACKEND_COMMAND" &
+if command -v pnpm >/dev/null 2>&1; then
+    pnpm dev &
+elif command -v npm >/dev/null 2>&1; then
+    npm run dev &
 else
-    if command -v pnpm &> /dev/null; then
-        pnpm dev &
-    elif command -v npm &> /dev/null; then
-        npm run dev &
-    elif command -v yarn &> /dev/null; then
-        yarn dev &
-    else
-        echo "Erreur: Aucun gestionnaire de paquets trouvé (pnpm, npm, yarn)"
-        exit 1
-    fi
+    echo "Erreur: pnpm ou npm non trouvé"
+    exit 1
 fi
 
-echo "Backend démarré"
+echo "Backend Payload démarré"
+
 

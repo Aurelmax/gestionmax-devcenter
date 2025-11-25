@@ -116,6 +116,14 @@ fn build_envs(project: &ProjectV3, service: &str) -> Vec<(String, String)> {
                     envs.push(("PROJECT_BACKEND_COMMAND".to_string(), cmd.clone()));
                 }
             }
+            if let Some(environment) = &project.environment {
+                for (key, value) in environment.backend_env.iter() {
+                    envs.push((
+                        format!("PROJECT_BACKEND_ENV_{}", key.to_ascii_uppercase()),
+                        value.clone(),
+                    ));
+                }
+            }
         }
         "frontend" => {
             envs.push(("PROJECT_FRONTEND_PATH".to_string(), project.frontend_path.clone()));
@@ -123,6 +131,14 @@ fn build_envs(project: &ProjectV3, service: &str) -> Vec<(String, String)> {
             if let Some(commands) = &project.commands {
                 if let Some(cmd) = &commands.frontend {
                     envs.push(("PROJECT_FRONTEND_COMMAND".to_string(), cmd.clone()));
+                }
+            }
+            if let Some(environment) = &project.environment {
+                for (key, value) in environment.frontend_env.iter() {
+                    envs.push((
+                        format!("PROJECT_FRONTEND_ENV_{}", key.to_ascii_uppercase()),
+                        value.clone(),
+                    ));
                 }
             }
         }

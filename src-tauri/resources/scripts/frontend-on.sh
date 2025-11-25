@@ -1,18 +1,13 @@
 #!/bin/bash
-# Script pour démarrer le frontend Next.js
-# Ce script est embarqué dans le bundle Tauri
+# Script pour démarrer le frontend Next.js (mono-repo gestionmaxopps)
 
-# Configuration par défaut
-FRONTEND_PATH="${PROJECT_FRONTEND_PATH:-$HOME/CascadeProjects}"
+FRONTEND_ROOT="${PROJECT_FRONTEND_PATH:-/home/gestionmax-aur-lien/CascadeProjects/gestionmaxopps}"
+FRONTEND_DIR="${PROJECT_FRONTEND_DIR:-frontend}"
 
-if [ -n "$1" ]; then
-    WORK_DIR="$1"
-else
-    WORK_DIR=$(find "$FRONTEND_PATH" -maxdepth 2 -type d -name "frontend" -o -name "next" | head -1)
-fi
+WORK_DIR="$FRONTEND_ROOT/$FRONTEND_DIR"
 
-if [ -z "$WORK_DIR" ] || [ ! -d "$WORK_DIR" ]; then
-    echo "Erreur: Dossier frontend introuvable ($WORK_DIR)"
+if [ ! -d "$WORK_DIR" ]; then
+    echo "Erreur: dossier frontend introuvable ($WORK_DIR)"
     exit 1
 fi
 
@@ -23,7 +18,7 @@ if [ ! -f "package.json" ]; then
     exit 1
 fi
 
-echo "Démarrage du frontend dans $WORK_DIR..."
+echo "Démarrage du frontend Next.js dans $WORK_DIR..."
 
 if [ -n "${PROJECT_FRONTEND_COMMAND:-}" ]; then
     echo "Commande personnalisée : $PROJECT_FRONTEND_COMMAND"

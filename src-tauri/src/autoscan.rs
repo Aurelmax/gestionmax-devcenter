@@ -4,6 +4,7 @@
 use chrono::Utc;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -59,6 +60,15 @@ pub struct Ports {
     pub frontend: u16,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct ProjectEnvironment {
+    #[serde(default)]
+    pub backend_env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub frontend_env: BTreeMap<String, String>,
+}
+
 #[allow(dead_code, non_snake_case)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Tunnel {
@@ -85,6 +95,14 @@ pub struct ProjectCommands {
 
 #[allow(dead_code, non_snake_case)]
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProjectServiceConfig {
+    pub start: Option<String>,
+    pub stop: Option<String>,
+    pub port: Option<u16>,
+}
+
+#[allow(dead_code, non_snake_case)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ProjectV3 {
     pub id: String,
     pub name: String,
@@ -98,7 +116,16 @@ pub struct ProjectV3 {
 
     pub ports: Ports,
 
+    #[serde(default)]
+    pub environment: Option<ProjectEnvironment>,
+
     pub tunnel: Option<Tunnel>,
+
+    #[serde(default)]
+    pub backend: Option<ProjectServiceConfig>,
+
+    #[serde(default)]
+    pub frontend: Option<ProjectServiceConfig>,
 
     #[serde(rename = "commands")]
     #[serde(default)]
@@ -731,6 +758,9 @@ pub async fn autoscan_project_v3(root_path: String) -> Result<ProjectV3, String>
             frontend: 3000,
         },
         tunnel: None,
+        environment: None,
+        backend: None,
+        frontend: None,
         commands: None,
         created_at: Utc::now().to_rfc3339(),
     })
