@@ -1,0 +1,82 @@
+{
+  "projects": [
+    {
+      "id": "gestionmaxopps",
+      "name": "Gestionmaxopps",
+      "rootPath": "/home/user/CascadeProjects/gestionmaxopps",
+      "backendPath": "/home/user/CascadeProjects/gestionmaxopps/backend",
+      "frontendPath": "/home/user/CascadeProjects/gestionmaxopps/frontend",
+      "ports": {
+        "backend": 3010,
+        "frontend": 3000
+      },
+      "commands": {
+        "backend": "pnpm dev",
+        "frontend": "npm run dev"
+      },
+      "tunnel": {
+        "enabled": true,
+        "host": "91.99.22.54",
+        "user": "root",
+        "port": 22,
+        "privateKey": "/home/user/.ssh/id_ed25519_hetzner",
+        "localMongo": 27017,
+        "remoteMongo": 27017
+      },
+      "createdAt": "2025-11-25T10:10:00.000Z"
+    },
+    {
+      "id": "autre-projet",
+      "name": "Autre Projet",
+      "rootPath": "/home/user/CascadeProjects/autre-projet",
+      "backendPath": "/home/user/CascadeProjects/autre-projet/backend",
+      "frontendPath": "/home/user/CascadeProjects/autre-projet/frontend",
+      "ports": {
+        "backend": 3011,
+        "frontend": 3001
+      },
+      "commands": {
+        "backend": "pnpm dev",
+        "frontend": "npm run dev"
+      },
+      "tunnel": {
+        "enabled": true,
+        "host": "91.99.22.54",
+        "user": "root",
+        "port": 22,
+        "privateKey": "/home/user/.ssh/id_ed25519_hetzner",
+        "localMongo": 27018,
+        "remoteMongo": 27017
+      },
+      "createdAt": "2025-11-25T10:10:00.000Z"
+    },
+    {
+      "id": "projet-staging",
+      "name": "Projet Staging",
+      "rootPath": "/home/user/CascadeProjects/projet-staging",
+      "backendPath": "/home/user/CascadeProjects/projet-staging/backend",
+      "frontendPath": "/home/user/CascadeProjects/projet-staging/frontend",
+      "ports": {
+        "backend": 3012,
+        "frontend": 3002
+      },
+      "commands": {
+        "backend": "pnpm dev",
+        "frontend": "npm run dev"
+      },
+      "tunnel": {
+        "enabled": true,
+        "host": "staging.example.com",
+        "user": "deploy",
+        "port": 22,
+        "privateKey": "/home/user/.ssh/id_ed25519_staging",
+        "localMongo": 27019,
+        "remoteMongo": 27017
+      },
+      "createdAt": "2025-11-25T10:10:00.000Z"
+    }
+  ]
+}
+
+
+

@@ -7,7 +7,6 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Loader2, GitBranch, CheckCircle2, AlertCircle } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { cloneGitRepo, autoscanProject } from "@/lib/autoscan";
-import { addProjectFromScan } from "@/lib/projectManager";
 import { ProjectScanResult } from "@/types/Project";
 import AutoScanSummary from "@/components/AutoScanSummary";
 
@@ -40,7 +39,17 @@ export default function ImportGit() {
         description: `Clonage de ${gitUrl}`,
       });
 
-      const clonedPath = await cloneGitRepo(gitUrl);
+      // Nettoyer l'URL avant de la passer au backend
+      // Supprimer les espaces avant/après et normaliser les espaces multiples
+      let cleanedUrl = gitUrl.trim().replace(/\s+/g, ' ');
+      // Supprimer les espaces avant les protocoles
+      cleanedUrl = cleanedUrl.replace(/\s+https:\/\//g, 'https://')
+        .replace(/\s+http:\/\//g, 'http://')
+        .replace(/\s+git@/g, 'git@')
+        .replace(/\s+ssh:\/\//g, 'ssh://')
+        .trim();
+      
+      const clonedPath = await cloneGitRepo(cleanedUrl);
 
       // Étape 2: Scanner automatiquement le projet
       toast({
@@ -73,28 +82,21 @@ export default function ImportGit() {
   const handleAddProject = async () => {
     if (!scanData) return;
 
-    setIsLoading(true);
+    // ⚠️ RÈGLE FONDAMENTALE: Import Git ne crée JAMAIS de projet automatiquement
+    // Il doit rediriger vers Project Manager pour que l'utilisateur crée le projet manuellement
+    // ou utiliser gmdev pour créer le projet
+    
+    toast({
+      title: "Suggestion créée",
+      description: `Le dépôt "${scanData.result.name}" a été cloné. Allez dans Configuration → Project Manager pour créer un projet.`,
+      duration: 6000,
+    });
 
-    try {
-      await addProjectFromScan(scanData.result, scanData.rootPath);
-
-      toast({
-        title: "Projet ajouté",
-        description: `Le projet "${scanData.result.name}" a été ajouté avec succès`,
-      });
-
-      // Rediriger vers le Dashboard
-      navigate("/dashboard");
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : "Erreur inconnue";
-      toast({
-        title: "Erreur",
-        description: errorMsg,
-        variant: "destructive",
-      });
-    } finally {
-      setIsLoading(false);
-    }
+    // Rediriger vers Project Manager avec les données du scan en suggestion
+    navigate("/configuration?tab=projects&suggestion=" + encodeURIComponent(JSON.stringify({
+      rootPath: scanData.rootPath,
+      scanResult: scanData.result
+    })));
   };
 
   return (

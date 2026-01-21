@@ -5,6 +5,7 @@ import {
   ProjectConfig,
   ProjectScanResult,
 } from "@/types/Project";
+import { ProjectV3 } from "@/types/ProjectV3";
 
 /**
  * Charge la configuration des projets
@@ -126,3 +127,91 @@ export async function addProjectFromScan(
   await addProject(project);
 }
 
+// ─────────────────────────────────────────────
+//   V3 Project Manager Functions
+// ─────────────────────────────────────────────
+
+export interface ProjectConfigV3 {
+  projects: ProjectV3[];
+}
+
+/**
+ * Charge la configuration des projets V3
+ */
+export async function loadProjectsV3(): Promise<ProjectConfigV3> {
+  try {
+    return await invoke<ProjectConfigV3>("load_projects_v3");
+  } catch (error) {
+    throw new Error(`Failed to load projects V3: ${error}`);
+  }
+}
+
+/**
+ * Sauvegarde la configuration des projets V3
+ */
+export async function saveProjectsV3(config: ProjectConfigV3): Promise<void> {
+  try {
+    // Tauri v2: parameter name must match Rust exactly
+    await invoke("save_projects_v3", { config });
+  } catch (error) {
+    throw new Error(`Failed to save projects V3: ${error}`);
+  }
+}
+
+/**
+ * Ajoute un nouveau projet V3
+ */
+export async function addProjectV3(project: ProjectV3): Promise<void> {
+  try {
+    const config = await loadProjectsV3();
+    
+    // Vérifier si un projet avec le même ID existe déjà
+    const existing = config.projects.find((p) => p.id === project.id);
+    if (existing) {
+      throw new Error(`Un projet avec le nom "${existing.name}" existe déjà. Modifiez-le dans Project Manager.`);
+    }
+    
+    config.projects.push(project);
+    await saveProjectsV3(config);
+  } catch (error) {
+    throw new Error(`Failed to add project V3: ${error}`);
+  }
+}
+
+/**
+ * Met à jour un projet V3 existant
+ */
+export async function updateProjectV3(project: ProjectV3): Promise<void> {
+  try {
+    const config = await loadProjectsV3();
+    
+    const index = config.projects.findIndex((p) => p.id === project.id);
+    if (index === -1) {
+      throw new Error(`Project with ID '${project.id}' not found`);
+    }
+    
+    config.projects[index] = project;
+    await saveProjectsV3(config);
+  } catch (error) {
+    throw new Error(`Failed to update project V3: ${error}`);
+  }
+}
+
+/**
+ * Supprime un projet V3
+ */
+export async function deleteProjectV3(projectId: string): Promise<void> {
+  try {
+    const config = await loadProjectsV3();
+    
+    const index = config.projects.findIndex((p) => p.id === projectId);
+    if (index === -1) {
+      throw new Error(`Project with ID '${projectId}' not found`);
+    }
+    
+    config.projects.splice(index, 1);
+    await saveProjectsV3(config);
+  } catch (error) {
+    throw new Error(`Failed to delete project V3: ${error}`);
+  }
+}

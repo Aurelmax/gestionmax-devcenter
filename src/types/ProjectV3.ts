@@ -5,14 +5,13 @@ export interface ServiceConfig {
 }
 
 export interface TunnelConfig {
-  start?: string;
-  stop?: string;
+  enabled?: boolean;
   host?: string;
   user?: string;
-  ssh_key?: string;
-  local_port?: number;
-  remote_port?: number;
-  type?: string;
+  port?: number;
+  privateKey?: string;
+  localMongo?: number;
+  remoteMongo?: number;
 }
 
 export interface ProjectEnvironment {
@@ -36,6 +35,9 @@ export interface ProjectV3 {
   frontendPath: string;
   scriptsPath?: string;
 
+  // Type de backend pour l'UX (badges, boutons, commandes par défaut)
+  backendType?: "payload" | "directus";
+
   ports: {
     backend: number;
     frontend: number;
@@ -50,6 +52,9 @@ export interface ProjectV3 {
   commands?: ProjectCommands;
 
   createdAt: string;
+  
+  // Activation du projet (un seul projet peut être actif à la fois)
+  enabled?: boolean;
 }
 
 export interface ProjectScanResultV3 {

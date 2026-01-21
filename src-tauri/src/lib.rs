@@ -46,7 +46,12 @@ pub fn run() {
             get_system_stats_v3,
             load_projects_v3,
             save_projects_v3,
-            clone_git_repo
+            clone_git_repo,
+            pull_git_repo,
+            scan_independent_repos,
+            get_gmdev_status,
+            get_gmdev_logs,
+            restart_service_v3
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

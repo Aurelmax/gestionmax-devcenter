@@ -1,0 +1,1150 @@
+#!/bin/bash
+# GestionMax Dev Runtime (gmdev)
+# Runtime officiel pour gérer les services de développement
+# Logs + PID files + project detection robustness
+# Version: 2.0.0
+
+set -euo pipefail
+
+# Couleurs
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Configuration
+PROJECTS_CONFIG="${GMDEV_PROJECTS_CONFIG:-$HOME/.gestionmax-devcenter/projects-v3.json}"
+PROJECT_ROOT="${GMDEV_PROJECT_ROOT:-$(pwd)}"
+
+# Logs
+GMDEV_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/gmdev"
+GMDEV_LOG_DIR="$GMDEV_STATE_DIR/logs"
+GMDEV_PID_DIR="$GMDEV_STATE_DIR/pids"
+
+mkdir -p "$GMDEV_LOG_DIR" "$GMDEV_PID_DIR"
+
+ts() { date "+%Y-%m-%d %H:%M:%S"; }
+
+# Fonctions utilitaires
+error() {
+    echo -e "${RED}❌ Erreur:${NC} $1" >&2
+    exit 1
+}
+
+info() {
+    echo -e "${BLUE}ℹ️${NC} $1"
+}
+
+success() {
+    echo -e "${GREEN}✅${NC} $1"
+}
+
+warning() {
+    echo -e "${YELLOW}⚠️${NC} $1"
+}
+
+# Normalise un chemin (best-effort)
+normpath() {
+    local p="$1"
+    if command -v realpath >/dev/null 2>&1; then
+        realpath -m "$p"
+    else
+        (cd "$p" 2>/dev/null && pwd) || echo "$p"
+    fi
+}
+
+# Détecte le projet courant depuis le répertoire de travail
+detect_project() {
+    local current_dir
+    current_dir="$(normpath "$PROJECT_ROOT")"
+    
+    # Chercher dans projects-v3.json
+    if [ -f "$PROJECTS_CONFIG" ]; then
+        # Extraire le projet qui correspond au répertoire courant
+        local project_id
+        project_id=$(jq -r --arg dir "$current_dir" '
+            .projects[] |
+            select(
+              (.rootPath     // "" | startswith($dir)) or
+              (.backendPath  // "" | startswith($dir)) or
+              (.frontendPath // "" | startswith($dir)) or
+              ($dir | startswith(.rootPath // "")) or
+              ($dir | startswith(.backendPath // "")) or
+              ($dir | startswith(.frontendPath // ""))
+            ) |
+            .id
+        ' "$PROJECTS_CONFIG" 2>/dev/null | head -1)
+        
+        if [ -n "$project_id" ] && [ "$project_id" != "null" ]; then
+            echo "$project_id"
+            return 0
+        fi
+    fi
+    
+    # Fallback: utiliser le nom du répertoire
+    basename "$current_dir" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | sed 's/[^a-z0-9-]//g'
+}
+
+pidfile() {
+    local project_id="$1"
+    local service="$2"
+    echo "$GMDEV_PID_DIR/${project_id}.${service}.pid"
+}
+
+# Charge la configuration du projet
+load_project_config() {
+    local project_id="$1"
+    
+    if [ ! -f "$PROJECTS_CONFIG" ]; then
+        error "Fichier de configuration introuvable: $PROJECTS_CONFIG"
+    fi
+    
+    jq -r --arg id "$project_id" '.projects[] | select(.id == $id)' "$PROJECTS_CONFIG" 2>/dev/null
+}
+
+# Trouve le PID d'un service
+find_service_pid() {
+    local service="$1"
+    local port="$2"
+    
+    # Pour le backend, chercher d'abord par nom de processus (car il peut ne pas écouter sur un port)
+    if [[ "$service" == "back" || "$service" == "backend" ]]; then
+        local pid=$(pgrep -f "tsx.*watch.*server\|tsx.*server\|node.*payload\|cross-env.*tsx.*server" | head -1)
+        if [ -n "$pid" ]; then
+            # Vérifier que ce n'est pas un processus next-server
+            if ! ps -p "$pid" 2>/dev/null | grep -q "next-server"; then
+                echo "$pid"
+                return 0
+            fi
+        fi
+        # Si pas trouvé par processus, essayer par port
+        if [ -n "$port" ] && [ "$port" != "0" ]; then
+            pid=$(lsof -ti:"$port" 2>/dev/null | head -1)
+            if [ -z "$pid" ]; then
+                pid=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | head -1)
+            fi
+            if [ -z "$pid" ]; then
+                pid=$(netstat -tlnp 2>/dev/null | grep ":$port " | grep -oP '[0-9]+/[^ ]+' | cut -d'/' -f1 | head -1)
+            fi
+            # Vérifier que ce n'est pas next-server
+            if [ -n "$pid" ] && ! ps -p "$pid" 2>/dev/null | grep -q "next-server"; then
+                echo "$pid"
+                return 0
+            fi
+        fi
+        return 1
+    fi
+    
+    # Pour les autres services, chercher par port d'abord
+    if [ -n "$port" ] && [ "$port" != "0" ]; then
+        # Essayer lsof d'abord
+        local pid=$(lsof -ti:"$port" 2>/dev/null | head -1)
+        if [ -z "$pid" ]; then
+            # Fallback: utiliser ss ou netstat pour IPv6
+            pid=$(ss -tlnp 2>/dev/null | grep ":$port " | grep -oP 'pid=\K[0-9]+' | head -1)
+        fi
+        if [ -z "$pid" ]; then
+            # Autre fallback: netstat
+            pid=$(netstat -tlnp 2>/dev/null | grep ":$port " | grep -oP '[0-9]+/[^ ]+' | cut -d'/' -f1 | head -1)
+        fi
+        if [ -n "$pid" ]; then
+            echo "$pid"
+            return 0
+        fi
+    fi
+    
+    # Chercher par nom de processus (fallback)
+    case "$service" in
+        tunnel)
+            pgrep -f "ssh.*-L.*:.*:.*" | head -1
+            ;;
+        front|frontend)
+            # Chercher les processus next.js (next dev, next-server, node next)
+            pgrep -f "next.*dev\|next-server\|node.*next" | head -1
+            ;;
+    esac
+}
+
+# Démarre un service
+start_service() {
+    local service="$1"
+    local project_id="${2:-}"
+    
+    if [ -z "$project_id" ]; then
+        project_id=$(detect_project)
+    fi
+    
+    local config=$(load_project_config "$project_id")
+    if [ -z "$config" ]; then
+        error "Projet '$project_id' introuvable dans la configuration"
+    fi
+    
+    case "$service" in
+        tunnel)
+            start_tunnel "$config"
+            ;;
+        back|backend)
+            start_backend "$config"
+            ;;
+        front|frontend)
+            start_frontend "$config"
+            ;;
+        *)
+            error "Service inconnu: $service. Services valides: tunnel, back, front"
+            ;;
+    esac
+}
+
+# Démarre le tunnel SSH
+start_tunnel() {
+    local config="$1"
+    
+    local host=$(echo "$config" | jq -r '.tunnel.host // empty')
+    local user=$(echo "$config" | jq -r '.tunnel.user // "root"')
+    local port=$(echo "$config" | jq -r '.tunnel.port // 22')
+    local key=$(echo "$config" | jq -r '.tunnel.privateKey // empty')
+    local local_mongo=$(echo "$config" | jq -r '.tunnel.localMongo // 27017')
+    local remote_mongo=$(echo "$config" | jq -r '.tunnel.remoteMongo // 27017')
+    local mongo_host=$(echo "$config" | jq -r '.tunnel.mongoHost // "127.0.0.1"')
+    
+    if [ -z "$host" ] || [ "$host" == "null" ]; then
+        error "Tunnel non configuré pour ce projet"
+    fi
+    
+    # Vérifier si déjà en cours d'exécution
+    local existing_pid=$(find_service_pid "tunnel" "$local_mongo")
+    if [ -n "$existing_pid" ]; then
+        warning "Tunnel déjà en cours d'exécution (PID: $existing_pid)"
+        return 0
+    fi
+    
+    if [ -z "$key" ] || [ "$key" == "null" ]; then
+        key="$HOME/.ssh/id_ed25519_hetzner"
+    fi
+    
+    if [ ! -f "$key" ]; then
+        error "Clé SSH introuvable: $key"
+    fi
+    
+    info "🔐 Démarrage tunnel SSH: localhost:$local_mongo → $mongo_host:$remote_mongo (via $host)"
+    
+    ssh -i "$key" \
+        -p "$port" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o ServerAliveInterval=60 \
+        -o ServerAliveCountMax=3 \
+        -N \
+        -L "${local_mongo}:${mongo_host}:${remote_mongo}" \
+        "${user}@${host}" >/dev/null 2>&1 &
+    
+    local pid=$!
+    sleep 1
+    
+    if ps -p "$pid" >/dev/null 2>&1; then
+        success "Tunnel SSH actif (PID: $pid)"
+    else
+        error "Échec du démarrage du tunnel SSH"
+    fi
+}
+
+# Démarre le backend
+start_backend() {
+    local config="$1"
+    
+    local backend_path=$(echo "$config" | jq -r '.backendPath // empty')
+    local backend_port=$(echo "$config" | jq -r '.ports.backend // 3000')
+    local command=$(echo "$config" | jq -r '.commands.backend // "npm run dev"')
+    local project_id=$(echo "$config" | jq -r '.id // "unknown"')
+    local log_file="$GMDEV_LOG_DIR/${project_id}.backend.log"
+    local pf; pf="$(pidfile "$project_id" "backend")"
+    
+    if [ -z "$backend_path" ] || [ "$backend_path" == "null" ]; then
+        error "Backend non configuré pour ce projet"
+    fi
+    
+    if [ ! -d "$backend_path" ]; then
+        error "Répertoire backend introuvable: $backend_path"
+    fi
+    
+    # Vérifier si déjà en cours d'exécution
+    local existing_pid=$(find_service_pid "back" "$backend_port")
+    if [ -n "$existing_pid" ]; then
+        warning "Backend déjà en cours d'exécution (PID: $existing_pid)"
+        return 0
+    fi
+    
+    info "📝 Logs backend → $log_file"
+    echo "[$(ts)] gmdev start backend (cmd=$command, port=$backend_port, path=$backend_path)" >> "$log_file"
+    
+    # Installer les dépendances si nécessaire
+    if [ ! -d "$backend_path/node_modules" ]; then
+        info "📦 Installation des dépendances..."
+        
+        # Détecter le gestionnaire de paquets
+        local install_cmd="npm install"
+        if [ -f "$backend_path/pnpm-lock.yaml" ] && command -v pnpm &> /dev/null; then
+            install_cmd="pnpm install"
+        elif [ -f "$backend_path/yarn.lock" ] && command -v yarn &> /dev/null; then
+            install_cmd="yarn install"
+        fi
+        
+        info "Installation avec: $install_cmd"
+        # Forcer l'installation locale pour pnpm
+        if [[ "$install_cmd" == *"pnpm"* ]]; then
+            # pnpm avec shamefully-hoist peut installer dans ~/node_modules
+            # Vérifier d'abord si node_modules existe localement ou globalement
+            if [ ! -d "$backend_path/node_modules" ] && [ -d "$HOME/node_modules" ]; then
+                # Créer un lien symbolique si node_modules est global
+                warning "node_modules trouvé globalement, création d'un lien symbolique..."
+                ln -sf "$HOME/node_modules" "$backend_path/node_modules" 2>/dev/null || true
+            fi
+            
+            # Installer même si node_modules existe (pour mettre à jour)
+            (cd "$backend_path" && echo "y" | pnpm install 2>&1 | grep -v "will be removed" | tail -10)
+            
+            # Vérifier que node_modules existe maintenant (local ou global)
+            if [ ! -d "$backend_path/node_modules" ] && [ ! -d "$HOME/node_modules" ]; then
+                error "Échec de l'installation des dépendances (node_modules introuvable)"
+            fi
+        else
+            (cd "$backend_path" && $install_cmd) || error "Échec de l'installation des dépendances"
+        fi
+    fi
+    
+    info "🚀 Démarrage backend sur le port $backend_port..."
+    
+    # Préparer le PATH pour inclure node_modules/.bin
+    local node_bin=""
+    if [ -d "$backend_path/node_modules/.bin" ]; then
+        node_bin="$backend_path/node_modules/.bin:"
+    elif [ -d "$HOME/node_modules/.bin" ]; then
+        node_bin="$HOME/node_modules/.bin:"
+    fi
+    
+    # Démarrer le backend avec le bon PATH
+    (cd "$backend_path" && PATH="${node_bin}$PATH" $command >>"$log_file" 2>&1) &
+    local pid=$!
+    echo "$pid" > "$pf"
+    sleep 3
+    
+    # Vérifier si le processus tourne ou si le port est utilisé
+    if ps -p "$pid" >/dev/null 2>&1 || find_service_pid "back" "$backend_port" >/dev/null; then
+        local actual_pid=$(find_service_pid "back" "$backend_port" || echo "$pid")
+        success "Backend démarré (PID: $actual_pid)"
+    else
+        error "Échec du démarrage du backend. Vérifiez les logs."
+    fi
+}
+
+# Démarre le frontend
+start_frontend() {
+    local config="$1"
+    
+    local frontend_path=$(echo "$config" | jq -r '.frontendPath // empty')
+    local frontend_port=$(echo "$config" | jq -r '.ports.frontend // 3000')
+    local command=$(echo "$config" | jq -r '.commands.frontend // "npm run dev"')
+    local project_id=$(echo "$config" | jq -r '.id // "unknown"')
+    local log_file="$GMDEV_LOG_DIR/${project_id}.frontend.log"
+    local pf; pf="$(pidfile "$project_id" "frontend")"
+    
+    if [ -z "$frontend_path" ] || [ "$frontend_path" == "null" ]; then
+        error "Frontend non configuré pour ce projet"
+    fi
+    
+    if [ ! -d "$frontend_path" ]; then
+        error "Répertoire frontend introuvable: $frontend_path"
+    fi
+    
+    # Vérifier si déjà en cours d'exécution
+    local existing_pid=$(find_service_pid "front" "$frontend_port")
+    if [ -n "$existing_pid" ]; then
+        warning "Frontend déjà en cours d'exécution (PID: $existing_pid)"
+        return 0
+    fi
+    
+    info "📝 Logs frontend → $log_file"
+    echo "[$(ts)] gmdev start frontend (cmd=$command, port=$frontend_port, path=$frontend_path)" >> "$log_file"
+    
+    # Installer les dépendances si nécessaire
+    if [ ! -d "$frontend_path/node_modules" ]; then
+        info "📦 Installation des dépendances..."
+        
+        # Détecter le gestionnaire de paquets
+        local install_cmd="npm install"
+        if [ -f "$frontend_path/pnpm-lock.yaml" ] && command -v pnpm &> /dev/null; then
+            install_cmd="pnpm install"
+        elif [ -f "$frontend_path/yarn.lock" ] && command -v yarn &> /dev/null; then
+            install_cmd="yarn install"
+        fi
+        
+        info "Installation avec: $install_cmd"
+        # Forcer l'installation locale pour pnpm
+        if [[ "$install_cmd" == *"pnpm"* ]]; then
+            # Utiliser PNPM_HOME et forcer l'installation locale
+            (cd "$frontend_path" && PNPM_HOME="" pnpm install --shamefully-hoist=false 2>&1 | grep -v "will be removed" | grep -v "Proceed?" || true)
+            # Attendre un peu pour que l'installation se termine
+            sleep 2
+            # Vérifier que node_modules existe maintenant
+            if [ ! -d "$frontend_path/node_modules" ]; then
+                warning "node_modules introuvable après installation, réessayant..."
+                (cd "$frontend_path" && pnpm install --force 2>&1 | tail -5)
+                if [ ! -d "$frontend_path/node_modules" ]; then
+                    error "Échec de l'installation des dépendances (node_modules introuvable)"
+                fi
+            fi
+        else
+            (cd "$frontend_path" && $install_cmd) || error "Échec de l'installation des dépendances"
+        fi
+    fi
+    
+    info "🚀 Démarrage frontend sur le port $frontend_port..."
+    
+    # Préparer le PATH pour inclure node_modules/.bin
+    local node_bin=""
+    if [ -d "$frontend_path/node_modules/.bin" ]; then
+        node_bin="$frontend_path/node_modules/.bin:"
+    elif [ -d "$HOME/node_modules/.bin" ]; then
+        node_bin="$HOME/node_modules/.bin:"
+    fi
+    
+    # Démarrer le frontend avec le bon PATH
+    (cd "$frontend_path" && PATH="${node_bin}$PATH" $command >>"$log_file" 2>&1) &
+    local pid=$!
+    echo "$pid" > "$pf"
+    sleep 3
+    
+    # Vérifier si le processus tourne ou si le port est utilisé
+    if ps -p "$pid" >/dev/null 2>&1 || find_service_pid "front" "$frontend_port" >/dev/null; then
+        local actual_pid=$(find_service_pid "front" "$frontend_port" || echo "$pid")
+        success "Frontend démarré (PID: $actual_pid)"
+    else
+        error "Échec du démarrage du frontend. Vérifiez les logs."
+    fi
+}
+
+# Arrête un service
+stop_service() {
+    local service="$1"
+    local project_id="${2:-}"
+    
+    if [ -z "$project_id" ]; then
+        project_id=$(detect_project)
+    fi
+    
+    local config=$(load_project_config "$project_id")
+    if [ -z "$config" ]; then
+        error "Projet '$project_id' introuvable dans la configuration"
+    fi
+    
+    case "$service" in
+        tunnel)
+            stop_tunnel "$config"
+            ;;
+        back|backend)
+            stop_backend "$config"
+            ;;
+        front|frontend)
+            stop_frontend "$config"
+            ;;
+        *)
+            error "Service inconnu: $service. Services valides: tunnel, back, front"
+            ;;
+    esac
+}
+
+# Arrête le tunnel
+stop_tunnel() {
+    local config="$1"
+    local local_mongo=$(echo "$config" | jq -r '.tunnel.localMongo // 27017')
+    
+    local pid=$(find_service_pid "tunnel" "$local_mongo")
+    if [ -z "$pid" ]; then
+        warning "Tunnel non en cours d'exécution"
+        return 0
+    fi
+    
+    info "Arrêt du tunnel (PID: $pid)..."
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    
+    if ! ps -p "$pid" >/dev/null 2>&1; then
+        success "Tunnel arrêté"
+    else
+        error "Échec de l'arrêt du tunnel"
+    fi
+}
+
+# Arrête le backend
+stop_backend() {
+    local config="$1"
+    local backend_port=$(echo "$config" | jq -r '.ports.backend // 3000')
+    local project_id=$(echo "$config" | jq -r '.id // "unknown"')
+    local pf; pf="$(pidfile "$project_id" "backend")"
+    
+    local pid=""
+    if [ -f "$pf" ]; then pid="$(cat "$pf" 2>/dev/null || true)"; fi
+    if [ -z "$pid" ]; then pid="$(find_service_pid "back" "$backend_port" || true)"; fi
+    if [ -z "$pid" ]; then
+        warning "Backend non en cours d'exécution"
+        return 0
+    fi
+    
+    info "Arrêt du backend (PID: $pid)..."
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    
+    if ! ps -p "$pid" >/dev/null 2>&1; then
+        success "Backend arrêté"
+        rm -f "$pf" 2>/dev/null || true
+    else
+        warning "Arrêt forcé du backend"
+        kill -9 "$pid" 2>/dev/null || true
+        rm -f "$pf" 2>/dev/null || true
+    fi
+}
+
+# Arrête le frontend
+stop_frontend() {
+    local config="$1"
+    local frontend_port=$(echo "$config" | jq -r '.ports.frontend // 3000')
+    local project_id=$(echo "$config" | jq -r '.id // "unknown"')
+    local pf; pf="$(pidfile "$project_id" "frontend")"
+    
+    local pid=""
+    if [ -f "$pf" ]; then pid="$(cat "$pf" 2>/dev/null || true)"; fi
+    if [ -z "$pid" ]; then pid="$(find_service_pid "front" "$frontend_port" || true)"; fi
+    if [ -z "$pid" ]; then
+        warning "Frontend non en cours d'exécution"
+        return 0
+    fi
+    
+    info "Arrêt du frontend (PID: $pid)..."
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    
+    if ! ps -p "$pid" >/dev/null 2>&1; then
+        success "Frontend arrêté"
+        rm -f "$pf" 2>/dev/null || true
+    else
+        warning "Arrêt forcé du frontend"
+        kill -9 "$pid" 2>/dev/null || true
+        rm -f "$pf" 2>/dev/null || true
+    fi
+}
+
+# Redémarre un service
+restart_service() {
+    local service="$1"
+    local project_id="${2:-}"
+    
+    info "Redémarrage de $service..."
+    stop_service "$service" "$project_id"
+    sleep 1
+    start_service "$service" "$project_id"
+}
+
+# Fonction doctor pour diagnostic
+doctor() {
+    local project_id="${1:-}"
+    if [ -z "$project_id" ]; then
+        project_id="$(detect_project)"
+    fi
+
+    local config
+    config="$(load_project_config "$project_id" 2>/dev/null || true)"
+    if [ -z "$config" ] || [ "$config" = "null" ]; then
+        error "Projet '$project_id' introuvable dans $PROJECTS_CONFIG"
+    fi
+
+    local name backend_path frontend_path backend_port frontend_port tunnel_host local_mongo
+    name="$(printf '%s' "$config" | jq -r '.name // "?"')"
+    backend_path="$(printf '%s' "$config" | jq -r '.backendPath // ""')"
+    frontend_path="$(printf '%s' "$config" | jq -r '.frontendPath // ""')"
+    backend_port="$(printf '%s' "$config" | jq -r '.ports.backend // 3010')"
+    frontend_port="$(printf '%s' "$config" | jq -r '.ports.frontend // 3000')"
+    tunnel_host="$(printf '%s' "$config" | jq -r '.tunnel.host // ""')"
+    local_mongo="$(printf '%s' "$config" | jq -r '.tunnel.localMongo // 27017')"
+
+    printf '\n%s\n' "🩺 gmdev doctor — $name ($project_id)"
+    printf '%s\n' "Config: $PROJECTS_CONFIG"
+    printf '%s\n' "State : $GMDEV_STATE_DIR"
+    printf '\n'
+
+    # Dépendances
+    local ok=1
+    for bin in jq lsof; do
+        if command -v "$bin" >/dev/null 2>&1; then
+            printf '%s\n' "✅ dep: $bin"
+        else
+            printf '%s\n' "❌ dep: $bin (manquant)"
+            ok=0
+        fi
+    done
+
+    # Répertoires
+    if [ -n "$backend_path" ]; then
+        if [ -d "$backend_path" ]; then
+            printf '%s\n' "✅ backendPath: $backend_path"
+        else
+            printf '%s\n' "❌ backendPath: $backend_path (introuvable)"
+            ok=0
+        fi
+    else
+        printf '%s\n' "ℹ️ backendPath: (absent) → projet sans backend"
+    fi
+
+    if [ -n "$frontend_path" ]; then
+        if [ -d "$frontend_path" ]; then
+            printf '%s\n' "✅ frontendPath: $frontend_path"
+        else
+            printf '%s\n' "❌ frontendPath: $frontend_path (introuvable)"
+            ok=0
+        fi
+    else
+        printf '%s\n' "ℹ️ frontendPath: (absent)"
+    fi
+
+    # Ports
+    if lsof -ti:"$frontend_port" >/dev/null 2>&1; then
+        printf '%s\n' "✅ port frontend :$frontend_port (occupé = OK si front tourne)"
+    else
+        printf '%s\n' "ℹ️ port frontend :$frontend_port (libre)"
+    fi
+
+    if [ -n "$backend_path" ]; then
+        if lsof -ti:"$backend_port" >/dev/null 2>&1; then
+            printf '%s\n' "✅ port backend  :$backend_port (occupé = OK si back tourne)"
+        else
+            printf '%s\n' "ℹ️ port backend  :$backend_port (libre)"
+        fi
+    fi
+
+    # Tunnel
+    if [ -n "$backend_path" ] && [ -n "$tunnel_host" ]; then
+        if lsof -ti:"$local_mongo" >/dev/null 2>&1; then
+            printf '%s\n' "✅ tunnel port mongo :$local_mongo (occupé)"
+        else
+            printf '%s\n' "ℹ️ tunnel port mongo :$local_mongo (libre)"
+        fi
+        # Test reachability (sans bloquer)
+        if timeout 3 bash -lc "nc -z \"$tunnel_host\" 22" >/dev/null 2>&1; then
+            printf '%s\n' "✅ ssh: $tunnel_host:22 joignable"
+        else
+            printf '%s\n' "⚠️ ssh: $tunnel_host:22 non joignable (ou nc absent)"
+        fi
+    else
+        printf '%s\n' "ℹ️ tunnel: non applicable (pas de backend ou pas de host)"
+    fi
+
+    printf '\n%s\n' "Résultat: $( [ "$ok" -eq 1 ] && printf '✅ OK' || printf '⚠️ À corriger' )"
+    printf '\n'
+}
+
+# Affiche le statut des services
+show_status() {
+    local project_id="${1:-}"
+    
+    if [ -z "$project_id" ]; then
+        project_id=$(detect_project)
+    fi
+    
+    local config=$(load_project_config "$project_id")
+    if [ -z "$config" ]; then
+        error "Projet '$project_id' introuvable dans la configuration"
+    fi
+    
+    local tunnel_port=$(echo "$config" | jq -r '.tunnel.localMongo // 27017')
+    local backend_port=$(echo "$config" | jq -r '.ports.backend // 3000')
+    local frontend_port=$(echo "$config" | jq -r '.ports.frontend // 3000')
+    
+    echo -e "${BLUE}📊 Statut des services - $(echo "$config" | jq -r '.name // "Projet inconnu"')${NC}"
+    echo ""
+    
+    # Tunnel
+    local tunnel_pid=$(find_service_pid "tunnel" "$tunnel_port")
+    if [ -n "$tunnel_pid" ]; then
+        echo -e "  ${GREEN}●${NC} Tunnel SSH: ${GREEN}RUNNING${NC} (PID: $tunnel_pid, Port: $tunnel_port)"
+    else
+        echo -e "  ${RED}●${NC} Tunnel SSH: ${RED}STOPPED${NC}"
+    fi
+    
+    # Backend
+    local backend_pid=$(find_service_pid "back" "$backend_port")
+    if [ -n "$backend_pid" ]; then
+        echo -e "  ${GREEN}●${NC} Backend: ${GREEN}RUNNING${NC} (PID: $backend_pid, Port: $backend_port)"
+    else
+        echo -e "  ${RED}●${NC} Backend: ${RED}STOPPED${NC}"
+    fi
+    
+    # Frontend
+    local frontend_pid=$(find_service_pid "front" "$frontend_port")
+    if [ -n "$frontend_pid" ]; then
+        echo -e "  ${GREEN}●${NC} Frontend: ${GREEN}RUNNING${NC} (PID: $frontend_pid, Port: $frontend_port)"
+    else
+        echo -e "  ${RED}●${NC} Frontend: ${RED}STOPPED${NC}"
+    fi
+}
+
+# Tue les processus zombies
+kill_zombies() {
+    info "🧹 Nettoyage des processus zombies..."
+    
+    local killed=0
+    
+    # Tuer les processus Node orphelins
+    for pid in $(pgrep -f "node.*payload\|tsx.*server\|next.*dev" 2>/dev/null); do
+        local ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+        if [ "$ppid" == "1" ] || [ -z "$ppid" ]; then
+            kill "$pid" 2>/dev/null && killed=$((killed + 1))
+        fi
+    done
+    
+    # Tuer les tunnels SSH orphelins
+    for pid in $(pgrep -f "ssh.*-L.*:.*:.*" 2>/dev/null); do
+        local ppid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+        if [ "$ppid" == "1" ] || [ -z "$ppid" ]; then
+            kill "$pid" 2>/dev/null && killed=$((killed + 1))
+        fi
+    done
+    
+    if [ "$killed" -gt 0 ]; then
+        success "$killed processus zombie tué"
+    else
+        info "Aucun processus zombie trouvé"
+    fi
+}
+
+# Affiche les logs d'un service
+show_logs() {
+    local service="$1"
+    local tail_count="${2:-200}"
+    local project_id="${3:-}"
+    
+    if [ -z "$project_id" ]; then
+        project_id=$(detect_project)
+    fi
+    
+    local config=$(load_project_config "$project_id")
+    if [ -z "$config" ]; then
+        error "Projet '$project_id' introuvable dans la configuration"
+    fi
+    
+    local pid=""
+    case "$service" in
+        tunnel)
+            warning "Les logs du tunnel SSH ne sont pas disponibles"
+            ;;
+        back|backend)
+            local log_file="$GMDEV_LOG_DIR/${project_id}.backend.log"
+            [ -f "$log_file" ] && tail -n "$tail_count" "$log_file" || info "Aucun log backend: $log_file"
+            ;;
+        front|frontend)
+            local log_file="$GMDEV_LOG_DIR/${project_id}.frontend.log"
+            [ -f "$log_file" ] && tail -n "$tail_count" "$log_file" || info "Aucun log frontend: $log_file"
+            ;;
+        *)
+            error "Service inconnu: $service"
+            ;;
+    esac
+}
+
+# Fonction doctor pour diagnostic
+doctor() {
+    local project_id="${1:-}"
+    if [ -z "$project_id" ]; then
+        project_id="$(detect_project)"
+    fi
+
+    local config
+    config="$(load_project_config "$project_id" 2>/dev/null || true)"
+    if [ -z "$config" ] || [ "$config" = "null" ]; then
+        error "Projet '$project_id' introuvable dans $PROJECTS_CONFIG"
+    fi
+
+    local name backend_path frontend_path backend_port frontend_port tunnel_host local_mongo
+    name="$(printf '%s' "$config" | jq -r '.name // "?"')"
+    backend_path="$(printf '%s' "$config" | jq -r '.backendPath // ""')"
+    frontend_path="$(printf '%s' "$config" | jq -r '.frontendPath // ""')"
+    backend_port="$(printf '%s' "$config" | jq -r '.ports.backend // 3010')"
+    frontend_port="$(printf '%s' "$config" | jq -r '.ports.frontend // 3000')"
+    tunnel_host="$(printf '%s' "$config" | jq -r '.tunnel.host // ""')"
+    local_mongo="$(printf '%s' "$config" | jq -r '.tunnel.localMongo // 27017')"
+
+    printf '\n%s\n' "🩺 gmdev doctor — $name ($project_id)"
+    printf '%s\n' "Config: $PROJECTS_CONFIG"
+    printf '%s\n' "State : $GMDEV_STATE_DIR"
+    printf '\n'
+
+    # Dépendances
+    local ok=1
+    for bin in jq lsof; do
+        if command -v "$bin" >/dev/null 2>&1; then
+            printf '%s\n' "✅ dep: $bin"
+        else
+            printf '%s\n' "❌ dep: $bin (manquant)"
+            ok=0
+        fi
+    done
+
+    # Répertoires
+    if [ -n "$backend_path" ]; then
+        if [ -d "$backend_path" ]; then
+            printf '%s\n' "✅ backendPath: $backend_path"
+        else
+            printf '%s\n' "❌ backendPath: $backend_path (introuvable)"
+            ok=0
+        fi
+    else
+        printf '%s\n' "ℹ️ backendPath: (absent) → projet sans backend"
+    fi
+
+    if [ -n "$frontend_path" ]; then
+        if [ -d "$frontend_path" ]; then
+            printf '%s\n' "✅ frontendPath: $frontend_path"
+        else
+            printf '%s\n' "❌ frontendPath: $frontend_path (introuvable)"
+            ok=0
+        fi
+    else
+        printf '%s\n' "ℹ️ frontendPath: (absent)"
+    fi
+
+    # Ports
+    if lsof -ti:"$frontend_port" >/dev/null 2>&1; then
+        printf '%s\n' "✅ port frontend :$frontend_port (occupé = OK si front tourne)"
+    else
+        printf '%s\n' "ℹ️ port frontend :$frontend_port (libre)"
+    fi
+
+    if [ -n "$backend_path" ]; then
+        if lsof -ti:"$backend_port" >/dev/null 2>&1; then
+            printf '%s\n' "✅ port backend  :$backend_port (occupé = OK si back tourne)"
+        else
+            printf '%s\n' "ℹ️ port backend  :$backend_port (libre)"
+        fi
+    fi
+
+    # Tunnel
+    if [ -n "$backend_path" ] && [ -n "$tunnel_host" ]; then
+        if lsof -ti:"$local_mongo" >/dev/null 2>&1; then
+            printf '%s\n' "✅ tunnel port mongo :$local_mongo (occupé)"
+        else
+            printf '%s\n' "ℹ️ tunnel port mongo :$local_mongo (libre)"
+        fi
+        # Test reachability (sans bloquer)
+        if timeout 3 bash -lc "nc -z \"$tunnel_host\" 22" >/dev/null 2>&1; then
+            printf '%s\n' "✅ ssh: $tunnel_host:22 joignable"
+        else
+            printf '%s\n' "⚠️ ssh: $tunnel_host:22 non joignable (ou nc absent)"
+        fi
+    else
+        printf '%s\n' "ℹ️ tunnel: non applicable (pas de backend ou pas de host)"
+    fi
+
+    printf '\n%s\n' "Résultat: $( [ "$ok" -eq 1 ] && printf '✅ OK' || printf '⚠️ À corriger' )"
+    printf '\n'
+}
+
+# Active un projet (désactive les autres)
+activate_project() {
+    local project_id="${1:-}"
+    if [ -z "$project_id" ]; then
+        project_id=$(detect_project)
+    fi
+
+    local config
+    config=$(load_project_config "$project_id" 2>/dev/null || true)
+    if [ -z "$config" ] || [ "$config" = "null" ]; then
+        error "Projet '$project_id' introuvable dans $PROJECTS_CONFIG"
+    fi
+
+    info "🔄 Activation du projet: $project_id"
+    
+    # Charger tous les projets et mettre à jour
+    local temp_file
+    temp_file=$(mktemp)
+    
+    # Désactiver tous les projets et arrêter leurs services
+    jq --arg target_id "$project_id" '
+        .projects[] | 
+        if .id == $target_id then
+            .enabled = true
+        else
+            if (.enabled // true) == true then
+                .enabled = false
+            else
+                .
+            end
+        end
+    ' "$PROJECTS_CONFIG" > /dev/null 2>&1 || true
+    
+    # Mettre à jour tous les projets
+    jq --arg target_id "$project_id" '
+        .projects = [
+            .projects[] | 
+            if .id == $target_id then
+                .enabled = true
+            else
+                if (.enabled // true) == true then
+                    .enabled = false
+                else
+                    .
+                end
+            end
+        ]
+    ' "$PROJECTS_CONFIG" > "$temp_file" 2>/dev/null
+    
+    if [ $? -eq 0 ]; then
+        mv "$temp_file" "$PROJECTS_CONFIG"
+        
+        # Arrêter les services des autres projets qui étaient actifs
+        local all_projects
+        all_projects=$(jq -c '.projects[]' "$PROJECTS_CONFIG" 2>/dev/null)
+        echo "$all_projects" | while IFS= read -r p; do
+            local p_id p_enabled
+            p_id=$(echo "$p" | jq -r '.id')
+            p_enabled=$(echo "$p" | jq -r '.enabled // true')
+            
+            if [ "$p_id" != "$project_id" ] && [ "$p_enabled" = "true" ]; then
+                info "Arrêt des services du projet '$p_id'..."
+                local p_backend_path
+                p_backend_path=$(echo "$p" | jq -r '.backendPath // ""')
+                if [ -n "$p_backend_path" ] && [ "$p_backend_path" != "null" ] && [ "$p_backend_path" != "" ]; then
+                    stop_backend "$p" 2>/dev/null || true
+                    stop_tunnel "$p" 2>/dev/null || true
+                fi
+                stop_frontend "$p" 2>/dev/null || true
+            fi
+        done
+        
+        local project_name
+        project_name=$(echo "$config" | jq -r '.name // "?"')
+        success "Projet '$project_name' ($project_id) activé. Les autres projets ont été désactivés."
+    else
+        error "Impossible de mettre à jour la configuration"
+    fi
+}
+
+# Affiche l'aide
+show_help() {
+    cat << EOF
+GestionMax Dev Runtime (gmdev) v2.0.0
+
+Usage: gmdev <command> [options]
+
+Commands:
+  status                    Affiche le statut de tous les services
+  start <service>           Démarre un service (tunnel|back|front)
+  stop <service>            Arrête un service (tunnel|back|front)
+  restart <service>         Redémarre un service (tunnel|back|front)
+  up [project_id]           Démarre tous les services applicables (tunnel → backend → frontend)
+  down [project_id]         Arrête tous les services actifs
+  activate [project_id]     Active un projet (désactive les autres automatiquement)
+  deactivate [project_id]   Désactive un projet et arrête ses services
+  doctor                    Diagnostic système complet (dépendances, ports, PID, logs)
+  logs <service> [--tail N] Affiche les logs d'un service
+  kill-zombies              Tue les processus zombies
+
+Examples:
+  gmdev status              # Statut du projet courant
+  gmdev start back          # Démarre le backend
+  gmdev stop front          # Arrête le frontend
+  gmdev up                  # Démarre tous les services applicables
+  gmdev down                # Arrête tous les services
+  gmdev activate            # Active le projet courant (désactive les autres)
+  gmdev activate my-project # Active un projet spécifique
+  gmdev deactivate          # Désactive le projet courant
+  gmdev doctor              # Diagnostic système complet
+  gmdev logs back --tail 100
+  gmdev kill-zombies
+
+Configuration:
+  Fichier: \$HOME/.gestionmax-devcenter/projects-v3.json
+  Logs: \$XDG_STATE_HOME/gmdev/logs
+  PID: \$XDG_STATE_HOME/gmdev/pids
+EOF
+}
+
+# Désactive un projet
+deactivate_project() {
+    local project_id="${1:-}"
+    if [ -z "$project_id" ]; then
+        project_id=$(detect_project)
+    fi
+
+    local config
+    config=$(load_project_config "$project_id" 2>/dev/null || true)
+    if [ -z "$config" ] || [ "$config" = "null" ]; then
+        error "Projet '$project_id' introuvable dans $PROJECTS_CONFIG"
+    fi
+
+    info "🔄 Désactivation du projet: $project_id"
+    
+    # Mettre à jour le projet
+    local temp_file
+    temp_file=$(mktemp)
+    jq --arg id "$project_id" '(.projects[] | select(.id == $id) | .enabled) = false' "$PROJECTS_CONFIG" > "$temp_file" 2>/dev/null
+    
+    if [ $? -eq 0 ]; then
+        mv "$temp_file" "$PROJECTS_CONFIG"
+        
+        # Arrêter tous les services de ce projet
+        local backend_path
+        backend_path=$(echo "$config" | jq -r '.backendPath // ""')
+        if [ -n "$backend_path" ] && [ "$backend_path" != "null" ] && [ "$backend_path" != "" ]; then
+            stop_backend "$config" 2>/dev/null || true
+            stop_tunnel "$config" 2>/dev/null || true
+        fi
+        stop_frontend "$config" 2>/dev/null || true
+        
+        local project_name
+        project_name=$(echo "$config" | jq -r '.name // "?"')
+        success "Projet '$project_name' ($project_id) désactivé et ses services arrêtés."
+    else
+        error "Impossible de mettre à jour la configuration"
+    fi
+}
+
+# Point d'entrée principal
+main() {
+    local command="${1:-help}"
+    
+    case "$command" in
+        status)
+            show_status "${2:-}"
+            ;;
+        start)
+            if [ -z "${2:-}" ]; then
+                error "Service requis. Usage: gmdev start <tunnel|back|front>"
+            fi
+            start_service "$2" "${3:-}"
+            ;;
+        stop)
+            if [ -z "${2:-}" ]; then
+                error "Service requis. Usage: gmdev stop <tunnel|back|front>"
+            fi
+            stop_service "$2" "${3:-}"
+            ;;
+        restart)
+            if [ -z "${2:-}" ]; then
+                error "Service requis. Usage: gmdev restart <tunnel|back|front>"
+            fi
+            restart_service "$2" "${3:-}"
+            ;;
+        logs)
+            if [ -z "${2:-}" ]; then
+                error "Service requis. Usage: gmdev logs <tunnel|back|front> [--tail N]"
+            fi
+            local tail_count=200
+            if [ "${3:-}" == "--tail" ] && [ -n "${4:-}" ]; then
+                tail_count="${4}"
+            fi
+            show_logs "$2" "$tail_count" "${5:-}"
+            ;;
+        kill-zombies)
+            kill_zombies
+            ;;
+        up)
+            # Démarrer tous les services applicables (tunnel → backend → frontend)
+            local project_id="${2:-$(detect_project)}"
+            local config
+            config=$(load_project_config "$project_id")
+            
+            info "🚀 Démarrage de tous les services applicables pour le projet: $project_id"
+            
+            # Tunnel uniquement si backend existe et tunnel activé
+            local backend_path
+            backend_path=$(echo "$config" | jq -r '.backendPath // ""')
+            local tunnel_enabled
+            tunnel_enabled=$(echo "$config" | jq -r '.tunnel.enabled // false')
+            
+            if [ -n "$backend_path" ] && [ "$backend_path" != "null" ] && [ "$backend_path" != "" ] && [ "$tunnel_enabled" = "true" ]; then
+                info "📡 Démarrage du tunnel..."
+                start_tunnel "$config" || warning "Échec du démarrage du tunnel - continuation..."
+                sleep 1
+            fi
+            
+            # Backend uniquement si backendPath existe
+            if [ -n "$backend_path" ] && [ "$backend_path" != "null" ] && [ "$backend_path" != "" ]; then
+                info "🔧 Démarrage du backend..."
+                start_backend "$config" || warning "Échec du démarrage du backend - continuation..."
+                sleep 1
+            fi
+            
+            # Frontend toujours (si frontendPath existe)
+            local frontend_path
+            frontend_path=$(echo "$config" | jq -r '.frontendPath // ""')
+            if [ -n "$frontend_path" ] && [ "$frontend_path" != "null" ] && [ "$frontend_path" != "" ]; then
+                info "🎨 Démarrage du frontend..."
+                start_frontend "$config" || warning "Échec du démarrage du frontend"
+            fi
+            
+            success "✅ Tous les services applicables ont été démarrés"
+            ;;
+        down)
+            # Arrêter tous les services actifs
+            local project_id="${2:-$(detect_project)}"
+            local config
+            config=$(load_project_config "$project_id")
+            
+            info "🛑 Arrêt de tous les services pour le projet: $project_id"
+            
+            # Arrêter dans l'ordre inverse : frontend → backend → tunnel
+            local frontend_path
+            frontend_path=$(echo "$config" | jq -r '.frontendPath // ""')
+            if [ -n "$frontend_path" ] && [ "$frontend_path" != "null" ] && [ "$frontend_path" != "" ]; then
+                info "🎨 Arrêt du frontend..."
+                stop_frontend "$config" || warning "Frontend non démarré ou déjà arrêté"
+            fi
+            
+            local backend_path
+            backend_path=$(echo "$config" | jq -r '.backendPath // ""')
+            if [ -n "$backend_path" ] && [ "$backend_path" != "null" ] && [ "$backend_path" != "" ]; then
+                info "🔧 Arrêt du backend..."
+                stop_backend "$config" || warning "Backend non démarré ou déjà arrêté"
+            fi
+            
+            local tunnel_enabled
+            tunnel_enabled=$(echo "$config" | jq -r '.tunnel.enabled // false')
+            if [ "$tunnel_enabled" = "true" ]; then
+                info "📡 Arrêt du tunnel..."
+                stop_tunnel "$config" || warning "Tunnel non démarré ou déjà arrêté"
+            fi
+            
+            success "✅ Tous les services ont été arrêtés"
+            ;;
+        doctor)
+            doctor "${2:-}"
+            ;;
+        activate)
+            activate_project "${2:-}"
+            ;;
+        deactivate)
+            deactivate_project "${2:-}"
+            ;;
+        --version|-v)
+            echo "gmdev v2.0.0"
+            ;;
+        help|--help|-h|"")
+            show_help
+            ;;
+        *)
+            error "Commande inconnue: $command. Utilisez 'gmdev help' pour l'aide."
+            ;;
+    esac
+}
+
+# Vérifier les dépendances
+if ! command -v jq &> /dev/null; then
+    error "jq est requis mais n'est pas installé. Installez-le avec: sudo apt install jq"
+fi
+
+if ! command -v lsof &> /dev/null; then
+    error "lsof est requis mais n'est pas installé. Installez-le avec: sudo apt install lsof"
+fi
+
+# Exécuter la commande
+main "$@"
+

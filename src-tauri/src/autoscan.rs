@@ -114,6 +114,11 @@ pub struct ProjectV3 {
     #[serde(rename = "frontendPath")]
     pub frontend_path: String,
 
+    // Type de backend pour l'UX (badges, boutons, commandes par défaut)
+    #[serde(rename = "backendType")]
+    #[serde(default)]
+    pub backend_type: Option<String>, // "payload" ou "directus"
+
     pub ports: Ports,
 
     #[serde(default)]
@@ -133,6 +138,10 @@ pub struct ProjectV3 {
 
     #[serde(rename = "createdAt")]
     pub created_at: String,
+
+    // Activation du projet (un seul projet peut être actif à la fois)
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -199,7 +208,7 @@ pub async fn autoscan_project(root_path: String) -> Result<ProjectScanResult, St
         warnings.push("Backend Payload non détecté".to_string());
     }
     let backend_port = match backend_path.as_ref() {
-        Some(path) => detect_backend_port(Path::new(path))?.or(Some(3010)),
+        Some(path) => detect_backend_port(Path::new(path))?.or(Some(3010)), // Port par défaut GestionMax: 3010
         None => None,
     };
 
@@ -208,7 +217,7 @@ pub async fn autoscan_project(root_path: String) -> Result<ProjectScanResult, St
         warnings.push("Frontend Next.js non détecté".to_string());
     }
     let frontend_port = match frontend_path.as_ref() {
-        Some(path) => detect_frontend_port(Path::new(path))?.or(Some(3000)),
+        Some(path) => detect_frontend_port(Path::new(path))?.or(Some(3000)), // Port par défaut GestionMax: 3000
         None => None,
     };
 
@@ -585,7 +594,19 @@ fn find_script(dir: &Path, candidates: &[&str]) -> Option<String> {
 
 /// Détecte le port du backend
 fn detect_backend_port(backend_path: &Path) -> Result<Option<u16>, String> {
-    // 1. Chercher dans .env
+    // 1. Chercher dans .env.local (priorité)
+    let env_local = backend_path.join(".env.local");
+    if env_local.exists() {
+        if let Ok(content) = fs::read_to_string(&env_local) {
+            if let Some(port) =
+                extract_port_from_env(&content, vec!["PORT", "BACKEND_PORT", "PAYLOAD_PORT"])
+            {
+                return Ok(Some(port));
+            }
+        }
+    }
+    
+    // 2. Chercher dans .env
     let env_file = backend_path.join(".env");
     if env_file.exists() {
         if let Ok(content) = fs::read_to_string(&env_file) {
@@ -597,7 +618,7 @@ fn detect_backend_port(backend_path: &Path) -> Result<Option<u16>, String> {
         }
     }
 
-    // 2. Chercher dans payload.config.ts
+    // 3. Chercher dans payload.config.ts
     let config_file = backend_path.join("payload.config.ts");
     if config_file.exists() {
         if let Ok(content) = fs::read_to_string(&config_file) {
@@ -607,7 +628,7 @@ fn detect_backend_port(backend_path: &Path) -> Result<Option<u16>, String> {
         }
     }
 
-    // 3. Chercher dans package.json
+    // 4. Chercher dans package.json
     let package_json = backend_path.join("package.json");
     if package_json.exists() {
         if let Ok(content) = fs::read_to_string(&package_json) {
@@ -619,7 +640,7 @@ fn detect_backend_port(backend_path: &Path) -> Result<Option<u16>, String> {
         }
     }
 
-    // Port par défaut pour Payload
+    // Port par défaut GestionMax: 3010
     Ok(Some(3010))
 }
 
@@ -629,13 +650,23 @@ fn detect_frontend_port(frontend_path: &Path) -> Result<Option<u16>, String> {
     let env_file = frontend_path.join(".env.local");
     if env_file.exists() {
         if let Ok(content) = fs::read_to_string(&env_file) {
-            if let Some(port) = extract_port_from_env(&content, vec!["PORT", "NEXT_PORT"]) {
+            if let Some(port) = extract_port_from_env(&content, vec!["PORT", "NEXT_PORT", "FRONTEND_PORT"]) {
+                return Ok(Some(port));
+            }
+        }
+    }
+    
+    // 2. Chercher dans .env
+    let env_file = frontend_path.join(".env");
+    if env_file.exists() {
+        if let Ok(content) = fs::read_to_string(&env_file) {
+            if let Some(port) = extract_port_from_env(&content, vec!["PORT", "NEXT_PORT", "FRONTEND_PORT"]) {
                 return Ok(Some(port));
             }
         }
     }
 
-    // 2. Chercher dans next.config.js
+    // 3. Chercher dans next.config.js
     let config_file = frontend_path.join("next.config.js");
     if config_file.exists() {
         if let Ok(content) = fs::read_to_string(&config_file) {
@@ -645,7 +676,7 @@ fn detect_frontend_port(frontend_path: &Path) -> Result<Option<u16>, String> {
         }
     }
 
-    // 3. Chercher dans package.json
+    // 4. Chercher dans package.json
     let package_json = frontend_path.join("package.json");
     if package_json.exists() {
         if let Ok(content) = fs::read_to_string(&package_json) {
@@ -657,7 +688,7 @@ fn detect_frontend_port(frontend_path: &Path) -> Result<Option<u16>, String> {
         }
     }
 
-    // Port par défaut pour Next.js
+    // Port par défaut GestionMax: 3000
     Ok(Some(3000))
 }
 
@@ -753,6 +784,7 @@ pub async fn autoscan_project_v3(root_path: String) -> Result<ProjectV3, String>
         frontend_path: frontend
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default(),
+        backend_type: None, // Détection automatique à implémenter si nécessaire
         ports: Ports {
             backend: 3010,
             frontend: 3000,
@@ -763,5 +795,310 @@ pub async fn autoscan_project_v3(root_path: String) -> Result<ProjectV3, String>
         frontend: None,
         commands: None,
         created_at: Utc::now().to_rfc3339(),
+        enabled: true, // Par défaut activé pour rétrocompatibilité
     })
+}
+
+/// Crée une configuration tunnel par défaut pour Coolify
+fn create_default_tunnel(local_mongo_port: u16) -> Option<Tunnel> {
+    let home = dirs::home_dir()?;
+    
+    // Valeurs par défaut communes pour Coolify
+    // L'utilisateur pourra les modifier via le Project Manager
+    let default_key = home.join(".ssh/id_ed25519_hetzner");
+    
+    // Vérifier si la clé existe, sinon utiliser une clé générique
+    let key_path = if default_key.exists() {
+        default_key.to_string_lossy().to_string()
+    } else {
+        // Chercher d'autres clés SSH communes
+        let ssh_dir = home.join(".ssh");
+        let common_keys = ["id_ed25519_hetzner", "id_ed25519", "id_rsa"];
+        
+        common_keys.iter()
+            .find_map(|key| {
+                let path = ssh_dir.join(key);
+                if path.exists() {
+                    Some(path.to_string_lossy().to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| home.join(".ssh/id_ed25519").to_string_lossy().to_string())
+    };
+    
+    Some(Tunnel {
+        enabled: false, // Désactivé par défaut, l'utilisateur l'activera
+        host: String::new(), // À configurer par l'utilisateur
+        user: "root".to_string(),
+        port: 22,
+        private_key: key_path,
+        local_mongo: local_mongo_port,
+        remote_mongo: 27017,
+    })
+}
+
+/// Scanne un dossier parent et détecte tous les repos indépendants (backend + frontend séparés)
+#[tauri::command]
+pub async fn scan_independent_repos(parent_path: String) -> Result<Vec<ProjectV3>, String> {
+    // Gérer l'expansion de ~
+    let expanded_path = if parent_path.starts_with("~/") {
+        let home = dirs::home_dir()
+            .ok_or_else(|| "Home directory not found".to_string())?;
+        home.join(&parent_path[2..])
+    } else {
+        PathBuf::from(&parent_path)
+    };
+    
+    let parent = expanded_path;
+    
+    if !parent.exists() {
+        return Err(format!("Path does not exist: {}", parent_path));
+    }
+    
+    if !parent.is_dir() {
+        return Err(format!("Path is not a directory: {}", parent_path));
+    }
+    
+    let mut backends: Vec<(String, String)> = Vec::new(); // (path, project_name)
+    let mut frontends: Vec<(String, String)> = Vec::new();
+    
+    // Scanner tous les sous-dossiers
+    let entries = fs::read_dir(&parent)
+        .map_err(|e| format!("Failed to read directory: {}", e))?;
+    
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read entry: {}", e))?;
+        let path = entry.path();
+        
+        if !path.is_dir() {
+            continue;
+        }
+        
+        let dir_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        
+        // Ignorer les dossiers système
+        if should_ignore_dir(&dir_name) {
+            continue;
+        }
+        
+        // Vérifier si c'est un backend Payload
+        let package_json = path.join("package.json");
+        let payload_config = path.join("payload.config.ts");
+        
+        if package_json.exists() {
+            if let Ok(content) = fs::read_to_string(&package_json) {
+                if content.contains("payload") || content.contains("@payloadcms") || payload_config.exists() {
+                    let project_name = extract_project_name(&dir_name, "backend");
+                    backends.push((path.to_string_lossy().to_string(), project_name));
+                    continue;
+                }
+            }
+        }
+        
+        // Vérifier si c'est un frontend Next.js
+        let next_config = path.join("next.config.js");
+        if package_json.exists() {
+            if let Ok(content) = fs::read_to_string(&package_json) {
+                if content.contains("\"next\"") || content.contains("nextjs") || next_config.exists() {
+                    let project_name = extract_project_name(&dir_name, "frontend");
+                    frontends.push((path.to_string_lossy().to_string(), project_name));
+                }
+            }
+        }
+    }
+    
+    // Associer backends et frontends par nom de projet
+    let mut projects: Vec<ProjectV3> = Vec::new();
+    let mut used_backends = std::collections::HashSet::new();
+    let mut used_frontends = std::collections::HashSet::new();
+    let mut mongo_port_counter = 27017u16; // Port par défaut GestionMax: 27017
+    
+    for (backend_path, backend_name) in &backends {
+        // Chercher un frontend correspondant
+        let matching_frontend = frontends.iter()
+            .find(|(_, frontend_name)| frontend_name == backend_name);
+        
+        let frontend_path = matching_frontend
+            .map(|(path, _)| path.clone())
+            .unwrap_or_default();
+        
+        if let Some((_, _)) = matching_frontend {
+            used_frontends.insert(matching_frontend.unwrap().0.clone());
+        }
+        used_backends.insert(backend_path.clone());
+        
+        // Créer le projet avec un ID unique basé sur le nom du dossier backend
+        let backend_dir = PathBuf::from(backend_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&backend_name)
+            .to_string();
+        let id = backend_dir.to_lowercase()
+            .replace(' ', "-")
+            .replace('_', "-")
+            .replace('/', "-");
+        let root_path = parent.to_string_lossy().to_string(); // Utiliser le parent comme root
+        
+        let backend_port = detect_backend_port(Path::new(backend_path))
+            .unwrap_or(None)
+            .unwrap_or(3000); // Port par défaut 3000 pour backend Payload
+        
+        let frontend_port = if !frontend_path.is_empty() {
+            detect_frontend_port(Path::new(&frontend_path))
+                .unwrap_or(None)
+                .unwrap_or(3010) // Port par défaut 3010 pour frontend Next.js
+        } else {
+            3010
+        };
+        
+        // Assigner un port MongoDB local unique pour ce projet
+        let local_mongo_port = mongo_port_counter;
+        mongo_port_counter += 1; // Incrémenter pour le prochain projet
+        
+        // Créer un tunnel par défaut (désactivé, à configurer par l'utilisateur)
+        let tunnel = create_default_tunnel(local_mongo_port);
+        
+        // Commandes par défaut (npm run dev pour backend et frontend)
+        let commands = Some(ProjectCommands {
+            backend: Some("npm run dev".to_string()),
+            frontend: if !frontend_path.is_empty() {
+                Some("npm run dev".to_string())
+            } else {
+                None
+            },
+            tunnel: None,
+            netdata: None,
+        });
+        
+        // Détecter automatiquement le type de backend (payload si payload.config.ts existe)
+        let backend_type = if Path::new(&backend_path).join("payload.config.ts").exists() 
+            || Path::new(&backend_path).join("payload.config.js").exists() {
+            Some("payload".to_string())
+        } else {
+            None
+        };
+        
+        projects.push(ProjectV3 {
+            id,
+            name: backend_name.clone(),
+            root_path,
+            backend_path: backend_path.clone(),
+            frontend_path,
+            backend_type,
+            ports: Ports {
+                backend: backend_port,
+                frontend: frontend_port,
+            },
+            tunnel,
+            environment: None,
+            backend: None,
+            frontend: None,
+            commands,
+            created_at: Utc::now().to_rfc3339(),
+            enabled: true, // Par défaut activé pour rétrocompatibilité
+        });
+    }
+    
+    // Ajouter les frontends orphelins (sans backend correspondant)
+    for (frontend_path, frontend_name) in &frontends {
+        if !used_frontends.contains(frontend_path) {
+            let id = frontend_name.to_lowercase().replace(' ', "-").replace('_', "-");
+            let root_path = parent.to_string_lossy().to_string();
+            
+            let frontend_port = detect_frontend_port(Path::new(frontend_path))
+                .unwrap_or(None)
+                .unwrap_or(3010); // Port par défaut 3010 pour frontend Next.js
+            
+            // Assigner un port MongoDB local unique pour ce projet
+            let local_mongo_port = mongo_port_counter;
+            mongo_port_counter += 1;
+            
+            // Créer un tunnel par défaut (désactivé, à configurer par l'utilisateur)
+            let tunnel = create_default_tunnel(local_mongo_port);
+            
+            // Commandes par défaut
+            let commands = Some(ProjectCommands {
+                backend: None,
+                frontend: Some("npm run dev".to_string()),
+                tunnel: None,
+                netdata: None,
+            });
+            
+            projects.push(ProjectV3 {
+                id,
+                name: frontend_name.clone(),
+                root_path,
+                backend_path: String::new(),
+                frontend_path: frontend_path.clone(),
+                backend_type: None, // Frontend only, pas de backend
+                ports: Ports {
+                    backend: 3010,
+                    frontend: frontend_port,
+                },
+                tunnel,
+                environment: None,
+                backend: None,
+                frontend: None,
+                commands,
+                created_at: Utc::now().to_rfc3339(),
+                enabled: true, // Par défaut activé pour rétrocompatibilité
+            });
+        }
+    }
+    
+    Ok(projects)
+}
+
+/// Extrait le nom du projet depuis le nom du dossier
+/// Ex: "projet-backend" -> "projet", "projet-frontend" -> "projet"
+/// Ex: "gestionmaxback" -> "gestionmax", "gestionmaxfront" -> "gestionmax"
+fn extract_project_name(dir_name: &str, suffix: &str) -> String {
+    let name_lower = dir_name.to_lowercase();
+    let suffix_lower = suffix.to_lowercase();
+    
+    // D'abord, essayer les patterns collés (sans séparateur)
+    let name = if name_lower.ends_with("backend") {
+        // "gestionmaxbackend" -> "gestionmax"
+        let without = &name_lower[..name_lower.len().saturating_sub(7)];
+        without.to_string()
+    } else if name_lower.ends_with("frontend") {
+        // "gestionmaxfrontend" -> "gestionmax"
+        let without = &name_lower[..name_lower.len().saturating_sub(8)];
+        without.to_string()
+    } else if name_lower.ends_with("back") {
+        // "gestionmaxback" -> "gestionmax"
+        let without = &name_lower[..name_lower.len().saturating_sub(4)];
+        without.to_string()
+    } else if name_lower.ends_with("front") {
+        // "gestionmaxfront" -> "gestionmax"
+        let without = &name_lower[..name_lower.len().saturating_sub(5)];
+        without.to_string()
+    } else if name_lower.ends_with(&suffix_lower) {
+        // Retirer le suffixe exact
+        let without = &name_lower[..name_lower.len().saturating_sub(suffix_lower.len())];
+        without.to_string()
+    } else {
+        // Patterns avec séparateurs: "projet-backend", "projet_backend", etc.
+        dir_name
+            .replace(&format!("-{}", suffix), "")
+            .replace(&format!("_{}", suffix), "")
+            .replace(&format!("-{}", &suffix[..suffix.len().min(4)]), "") // "back" ou "front"
+            .replace(&format!("_{}", &suffix[..suffix.len().min(4)]), "")
+            .to_lowercase()
+    };
+    
+    let cleaned = name
+        .trim_end_matches('-')
+        .trim_end_matches('_')
+        .to_string();
+    
+    if cleaned.is_empty() {
+        format_project_name(dir_name)
+    } else {
+        format_project_name(&cleaned)
+    }
 }

@@ -39,10 +39,10 @@ pub async fn load_projects_v3() -> Result<ProjectConfigV3, String> {
 }
 
 #[command]
-pub async fn save_projects_v3(cfg: ProjectConfigV3) -> Result<(), String> {
+pub async fn save_projects_v3(config: ProjectConfigV3) -> Result<(), String> {
     let path = config_file_path();
 
-    let text = serde_json::to_string_pretty(&cfg)
+    let text = serde_json::to_string_pretty(&config)
         .map_err(|e| format!("Failed to serialize V3 JSON: {e}"))?;
 
     fs::write(&path, text).map_err(|e| format!("Failed to write V3 config: {e}"))?;

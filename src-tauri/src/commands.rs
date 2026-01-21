@@ -45,6 +45,9 @@ fn get_script_path(app_handle: &AppHandle, script_name: &str) -> Result<PathBuf,
     Err(format!("Script not found: {}", script_name))
 }
 
+/// OBSOLÈTE depuis v2.0 - Migration vers gmdev
+/// Cette fonction n'est plus utilisée car on appelle directement gmdev
+#[allow(dead_code)]
 fn resolve_script(service: &str, action: &str) -> Option<&'static str> {
     match (service, action) {
         ("backend", "start") => Some("backend-on.sh"),
@@ -60,33 +63,14 @@ fn resolve_script(service: &str, action: &str) -> Option<&'static str> {
     }
 }
 
-fn run_embedded_script(
-    app_handle: &AppHandle,
-    script_name: &str,
-    cwd: Option<PathBuf>,
-    envs: Vec<(String, String)>,
-) -> ScriptResult {
-    let script_path = match get_script_path(app_handle, script_name) {
-        Ok(path) => path,
-        Err(err) => {
-            return ScriptResult {
-                stdout: String::new(),
-                stderr: err.to_string(),
-                code: 127,
-            }
-        }
-    };
-
-    let mut cmd = Command::new("bash");
-    cmd.arg(script_path.to_string_lossy().to_string());
+/// Exécute une commande gmdev
+fn run_gmdev_command(args: &[&str], cwd: Option<PathBuf>) -> ScriptResult {
+    let mut cmd = Command::new("gmdev");
+    cmd.args(args);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
-
-    for (key, value) in envs {
-        cmd.env(key, value);
-    }
-
+    
     match cmd.output() {
         Ok(output) => ScriptResult {
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
@@ -95,18 +79,82 @@ fn run_embedded_script(
         },
         Err(err) => ScriptResult {
             stdout: String::new(),
-            stderr: err.to_string(),
+            stderr: format!("Erreur lors de l'exécution de gmdev: {}. Assurez-vous que gmdev est installé et dans votre PATH.", err),
             code: -1,
         },
     }
 }
 
+/// Vérifie si gmdev est disponible
+fn is_gmdev_available() -> bool {
+    Command::new("gmdev")
+        .arg("--version")
+        .output()
+        .is_ok()
+}
+
+/// OBSOLÈTE depuis v2.0 - Migration vers gmdev
+/// Cette fonction n'est plus utilisée car on appelle directement gmdev via run_gmdev_command
+#[allow(dead_code)]
+fn run_embedded_script(
+    _app_handle: &AppHandle,
+    script_name: &str,
+    cwd: Option<PathBuf>,
+    _envs: Vec<(String, String)>,
+) -> ScriptResult {
+    // Vérifier que gmdev est disponible (OBLIGATOIRE)
+    if !is_gmdev_available() {
+        return ScriptResult {
+            stdout: String::new(),
+            stderr: "gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé. Installez-le et ajoutez-le à votre PATH.".to_string(),
+            code: 127,
+        };
+    }
+    
+    // Mapper les scripts vers les commandes gmdev
+    let gmdev_cmd = match map_script_to_gmdev(script_name) {
+        Some(cmd) => cmd,
+        None => {
+            return ScriptResult {
+                stdout: String::new(),
+                stderr: format!("Script '{}' non mappé vers gmdev. gmdev est le seul runtime autorisé.", script_name),
+                code: 127,
+            };
+        }
+    };
+    
+    // Exécuter via gmdev (seule source de vérité)
+    run_gmdev_command(&gmdev_cmd, cwd)
+}
+
+/// OBSOLÈTE depuis v2.0 - Migration vers gmdev
+/// Cette fonction n'est plus utilisée car on appelle directement gmdev
+#[allow(dead_code)]
+fn map_script_to_gmdev(script_name: &str) -> Option<Vec<&str>> {
+    match script_name {
+        "tunnel-on.sh" => Some(vec!["start", "tunnel"]),
+        "tunnel-off.sh" => Some(vec!["stop", "tunnel"]),
+        "backend-on.sh" => Some(vec!["start", "back"]),
+        "backend-off.sh" => Some(vec!["stop", "back"]),
+        "frontend-on.sh" => Some(vec!["start", "front"]),
+        "frontend-off.sh" => Some(vec!["stop", "front"]),
+        "kill-zombies.sh" => Some(vec!["kill-zombies"]),
+        _ => None,
+    }
+}
+
+/// OBSOLÈTE depuis v2.0 - Migration vers gmdev
+/// Le statut des ports est maintenant géré par gmdev status
+#[allow(dead_code)]
 fn is_port_listening(port: u16) -> bool {
     use std::net::TcpListener;
     // Try to bind - if it fails, port is already in use (listening)
     TcpListener::bind(format!("127.0.0.1:{}", port)).is_err()
 }
 
+/// OBSOLÈTE depuis v2.0 - Migration vers gmdev
+/// Les variables d'environnement sont maintenant gérées par gmdev
+#[allow(dead_code)]
 fn build_envs(project: &ProjectV3, service: &str) -> Vec<(String, String)> {
     let mut envs = vec![(
         "PROJECT_ROOT_PATH".to_string(),
@@ -150,15 +198,18 @@ fn build_envs(project: &ProjectV3, service: &str) -> Vec<(String, String)> {
         }
         "tunnel" => {
             if let Some(tunnel) = &project.tunnel {
-                envs.push(("PROJECT_TUNNEL_HOST".to_string(), tunnel.host.clone()));
-                envs.push(("PROJECT_TUNNEL_USER".to_string(), tunnel.user.clone()));
-                envs.push(("PROJECT_TUNNEL_PORT".to_string(), tunnel.port.to_string()));
-                envs.push(("PROJECT_LOCAL_MONGO".to_string(), tunnel.local_mongo.to_string()));
-                envs.push(("PROJECT_REMOTE_MONGO".to_string(), tunnel.remote_mongo.to_string()));
-                envs.push(("PROJECT_TUNNEL_KEY".to_string(), tunnel.private_key.clone()));
-                if let Some(commands) = &project.commands {
-                    if let Some(cmd) = &commands.tunnel {
-                        envs.push(("PROJECT_TUNNEL_COMMAND".to_string(), cmd.clone()));
+                // Ne définir les variables que si le tunnel est activé et configuré
+                if tunnel.enabled && !tunnel.host.is_empty() {
+                    envs.push(("PROJECT_TUNNEL_HOST".to_string(), tunnel.host.clone()));
+                    envs.push(("PROJECT_TUNNEL_USER".to_string(), tunnel.user.clone()));
+                    envs.push(("PROJECT_TUNNEL_PORT".to_string(), tunnel.port.to_string()));
+                    envs.push(("PROJECT_LOCAL_MONGO".to_string(), tunnel.local_mongo.to_string()));
+                    envs.push(("PROJECT_REMOTE_MONGO".to_string(), tunnel.remote_mongo.to_string()));
+                    envs.push(("PROJECT_TUNNEL_KEY".to_string(), tunnel.private_key.clone()));
+                    if let Some(commands) = &project.commands {
+                        if let Some(cmd) = &commands.tunnel {
+                            envs.push(("PROJECT_TUNNEL_COMMAND".to_string(), cmd.clone()));
+                        }
                     }
                 }
             }
@@ -177,6 +228,9 @@ fn build_envs(project: &ProjectV3, service: &str) -> Vec<(String, String)> {
     envs
 }
 
+/// OBSOLÈTE depuis v2.0 - Migration vers gmdev
+/// Le statut est maintenant obtenu via gmdev status
+#[allow(dead_code)]
 fn status_for_backend(project: &ProjectV3) -> bool {
     // First check if port is listening
     if is_port_listening(project.ports.backend) {
@@ -186,7 +240,6 @@ fn status_for_backend(project: &ProjectV3) -> bool {
     // Fallback: check for process
     let mut system = System::new_all();
     system.refresh_all();
-    let port = project.ports.backend.to_string();
     system.processes().values().any(|process| {
         let name = process.name().to_ascii_lowercase();
         let cmd = process.cmd().join(" ").to_ascii_lowercase();
@@ -195,6 +248,9 @@ fn status_for_backend(project: &ProjectV3) -> bool {
     })
 }
 
+/// OBSOLÈTE depuis v2.0 - Migration vers gmdev
+/// Le statut est maintenant obtenu via gmdev status
+#[allow(dead_code)]
 fn status_for_frontend(project: &ProjectV3) -> bool {
     // First check if port is listening
     if is_port_listening(project.ports.frontend) {
@@ -212,6 +268,9 @@ fn status_for_frontend(project: &ProjectV3) -> bool {
     })
 }
 
+/// OBSOLÈTE depuis v2.0 - Migration vers gmdev
+/// Le statut est maintenant obtenu via gmdev status
+#[allow(dead_code)]
 fn status_for_tunnel(project: &ProjectV3) -> bool {
     if let Some(tunnel) = &project.tunnel {
         let pattern = format!(
@@ -230,6 +289,9 @@ fn status_for_tunnel(project: &ProjectV3) -> bool {
     }
 }
 
+/// OBSOLÈTE depuis v2.0 - Migration vers gmdev
+/// Le statut est maintenant obtenu via gmdev status
+#[allow(dead_code)]
 fn status_for_netdata() -> bool {
     let mut system = System::new_all();
     system.refresh_all();
@@ -833,54 +895,188 @@ pub async fn stop_service(
 
 #[tauri::command]
 pub async fn start_service_v3(
-    app_handle: AppHandle,
+    _app_handle: AppHandle,
     project_id: String,
     service: String,
 ) -> Result<ScriptResult, String> {
+    // gmdev est la seule source de vérité - OBLIGATOIRE
+    if !is_gmdev_available() {
+        return Err("gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé.".to_string());
+    }
+    
     let cfg = load_projects_v3().await.map_err(|e| e)?;
     let project =
         get_project_by_id(&cfg, &project_id).ok_or_else(|| "Project not found".to_string())?;
-    let script = resolve_script(&service, "start").ok_or_else(|| "Unknown service".to_string())?;
+    
+    // Mapper le service vers la commande gmdev
+    let gmdev_service = match service.as_str() {
+        "backend" => "back",
+        "frontend" => "front",
+        "tunnel" => "tunnel",
+        _ => return Err(format!("Service inconnu: {}", service)),
+    };
+    
+    // Appeler gmdev start (seule source de vérité)
     let cwd = Some(PathBuf::from(&project.root_path));
-    let envs = build_envs(project, &service);
-    Ok(run_embedded_script(&app_handle, script, cwd, envs))
+    Ok(run_gmdev_command(&["start", gmdev_service], cwd))
 }
 
 #[tauri::command]
 pub async fn status_service_v3(project_id: String, service: String) -> Result<String, String> {
+    // gmdev est la seule source de vérité - OBLIGATOIRE
+    if !is_gmdev_available() {
+        return Err("gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé.".to_string());
+    }
+    
+    let gmdev_service = match service.as_str() {
+        "backend" => "back",
+        "frontend" => "front",
+        "tunnel" => "tunnel",
+        _ => return Err(format!("Service inconnu: {}", service)),
+    };
+    
     let cfg = load_projects_v3().await.map_err(|e| e)?;
     let project =
         get_project_by_id(&cfg, &project_id).ok_or_else(|| "Project not found".to_string())?;
-    let running = match service.as_str() {
-        "backend" => status_for_backend(project),
-        "frontend" => status_for_frontend(project),
-        "tunnel" => status_for_tunnel(project),
-        "netdata" => status_for_netdata(),
-        _ => return Err(format!("Unknown service: {}", service)),
-    };
-
-    Ok(if running { "RUNNING".into() } else { "STOPPED".into() })
+    
+    // Utiliser gmdev status (seule source de vérité)
+    let result = run_gmdev_command(&["status"], Some(PathBuf::from(&project.root_path)));
+    
+    // Parser la sortie de gmdev status
+    // Format attendu: tunnel(front/back) + ports + pid + last logs
+    if result.code == 0 {
+        let output = result.stdout.to_lowercase();
+        // Vérifier si le service est mentionné comme running dans la sortie
+        if output.contains(gmdev_service) && (output.contains("running") || output.contains("active")) {
+            return Ok("RUNNING".into());
+        }
+        return Ok("STOPPED".into());
+    }
+    
+    // Si gmdev status échoue, on ne peut pas déterminer le statut
+    Err(format!("Impossible de déterminer le statut via gmdev: {}", result.stderr))
 }
 
 #[tauri::command]
 pub async fn stop_service_v3(
-    app_handle: AppHandle,
+    _app_handle: AppHandle,
     project_id: String,
     service: String,
 ) -> Result<ScriptResult, String> {
+    // gmdev est la seule source de vérité - OBLIGATOIRE
+    if !is_gmdev_available() {
+        return Err("gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé.".to_string());
+    }
+    
     let cfg = load_projects_v3().await.map_err(|e| e)?;
     let project =
         get_project_by_id(&cfg, &project_id).ok_or_else(|| "Project not found".to_string())?;
-    let script = resolve_script(&service, "stop").ok_or_else(|| "Unknown service".to_string())?;
+    
+    // Mapper le service vers la commande gmdev
+    let gmdev_service = match service.as_str() {
+        "backend" => "back",
+        "frontend" => "front",
+        "tunnel" => "tunnel",
+        _ => return Err(format!("Service inconnu: {}", service)),
+    };
+    
+    // Appeler gmdev stop (seule source de vérité)
     let cwd = Some(PathBuf::from(&project.root_path));
-    let envs = build_envs(project, &service);
-    Ok(run_embedded_script(&app_handle, script, cwd, envs))
+    Ok(run_gmdev_command(&["stop", gmdev_service], cwd))
 }
 #[tauri::command]
-pub async fn kill_zombies_v3(app_handle: AppHandle) -> Result<ScriptResult, String> {
-    let script =
-        resolve_script("zombies", "kill").ok_or_else(|| "Missing kill script".to_string())?;
-    Ok(run_embedded_script(&app_handle, script, None, Vec::new()))
+pub async fn kill_zombies_v3(_app_handle: AppHandle) -> Result<ScriptResult, String> {
+    // gmdev est la seule source de vérité - OBLIGATOIRE
+    if !is_gmdev_available() {
+        return Err("gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé.".to_string());
+    }
+    
+    // Utiliser gmdev kill-zombies (seule source de vérité)
+    Ok(run_gmdev_command(&["kill-zombies"], None))
+}
+
+/// Obtient le statut complet via gmdev status
+#[tauri::command]
+pub async fn get_gmdev_status(project_id: String) -> Result<String, String> {
+    if !is_gmdev_available() {
+        return Err("gmdev n'est pas disponible. Assurez-vous qu'il est installé et dans votre PATH.".to_string());
+    }
+    
+    let cfg = load_projects_v3().await.map_err(|e| e)?;
+    let project =
+        get_project_by_id(&cfg, &project_id).ok_or_else(|| "Project not found".to_string())?;
+    
+    let result = run_gmdev_command(&["status"], Some(PathBuf::from(&project.root_path)));
+    
+    if result.code == 0 {
+        Ok(result.stdout)
+    } else {
+        Err(format!("Erreur gmdev status: {}", result.stderr))
+    }
+}
+
+/// Obtient les logs d'un service via gmdev logs
+#[tauri::command]
+pub async fn get_gmdev_logs(
+    project_id: String,
+    service: String,
+    tail: Option<u32>,
+) -> Result<String, String> {
+    if !is_gmdev_available() {
+        return Err("gmdev n'est pas disponible. Assurez-vous qu'il est installé et dans votre PATH.".to_string());
+    }
+    
+    let cfg = load_projects_v3().await.map_err(|e| e)?;
+    let project =
+        get_project_by_id(&cfg, &project_id).ok_or_else(|| "Project not found".to_string())?;
+    
+    let gmdev_service = match service.as_str() {
+        "backend" => "back",
+        "frontend" => "front",
+        "tunnel" => "tunnel",
+        _ => return Err(format!("Service inconnu: {}", service)),
+    };
+    
+    let tail_count = tail.unwrap_or(200);
+    let tail_str = tail_count.to_string();
+    let args = vec!["logs", gmdev_service, "--tail", &tail_str];
+    
+    let result = run_gmdev_command(&args, Some(PathBuf::from(&project.root_path)));
+    
+    if result.code == 0 {
+        Ok(result.stdout)
+    } else {
+        Err(format!("Erreur gmdev logs: {}", result.stderr))
+    }
+}
+
+/// Redémarre un service via gmdev restart
+#[tauri::command]
+pub async fn restart_service_v3(
+    _app_handle: AppHandle,
+    project_id: String,
+    service: String,
+) -> Result<ScriptResult, String> {
+    // gmdev est la seule source de vérité - OBLIGATOIRE
+    if !is_gmdev_available() {
+        return Err("gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé.".to_string());
+    }
+    
+    let cfg = load_projects_v3().await.map_err(|e| e)?;
+    let project =
+        get_project_by_id(&cfg, &project_id).ok_or_else(|| "Project not found".to_string())?;
+    
+    // Mapper le service vers la commande gmdev
+    let gmdev_service = match service.as_str() {
+        "backend" => "back",
+        "frontend" => "front",
+        "tunnel" => "tunnel",
+        _ => return Err(format!("Service inconnu: {}", service)),
+    };
+    
+    // Appeler gmdev restart (seule source de vérité)
+    let cwd = Some(PathBuf::from(&project.root_path));
+    Ok(run_gmdev_command(&["restart", gmdev_service], cwd))
 }
 
 /// Tue un processus par son PID

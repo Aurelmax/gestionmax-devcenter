@@ -19,8 +19,31 @@ pub async fn clone_git_repo(url: String, target_dir: Option<String>) -> Result<S
             .map_err(|e| format!("Failed to create target directory: {}", e))?;
     }
 
+    // Nettoyer l'URL (supprimer les espaces avant/après et normaliser)
+    let mut cleaned_url = url.trim().to_string();
+    
+    // Supprimer les espaces multiples et s'assurer qu'il n'y a pas d'espace avant le protocole
+    cleaned_url = cleaned_url.replace(" https://", "https://")
+        .replace(" http://", "http://")
+        .replace(" git@", "git@")
+        .replace(" ssh://", "ssh://");
+    cleaned_url = cleaned_url.trim().to_string();
+    
+    // Vérifier que l'URL est valide
+    if cleaned_url.is_empty() {
+        return Err("URL Git vide".to_string());
+    }
+    
+    // Vérifier que l'URL commence par un protocole valide
+    if !cleaned_url.starts_with("https://") 
+        && !cleaned_url.starts_with("http://")
+        && !cleaned_url.starts_with("git@")
+        && !cleaned_url.starts_with("ssh://") {
+        return Err(format!("URL Git invalide: doit commencer par https://, http://, git@ ou ssh://. Reçu: '{}'", cleaned_url));
+    }
+
     // Extraire le nom du projet depuis l'URL Git
-    let project_name = extract_project_name_from_url(&url)?;
+    let project_name = extract_project_name_from_url(&cleaned_url)?;
     let project_path = target.join(&project_name);
 
     // Vérifier si le projet existe déjà
@@ -37,7 +60,7 @@ pub async fn clone_git_repo(url: String, target_dir: Option<String>) -> Result<S
         .arg("clone")
         .arg("--depth")
         .arg("1")
-        .arg(&url)
+        .arg(&cleaned_url)
         .arg(&project_path)
         .output()
         .map_err(|e| {
@@ -53,6 +76,43 @@ pub async fn clone_git_repo(url: String, target_dir: Option<String>) -> Result<S
     }
 
     Ok(project_path.to_string_lossy().to_string())
+}
+
+/// Met à jour un dépôt Git existant (git pull)
+#[tauri::command]
+pub async fn pull_git_repo(project_path: String) -> Result<String, String> {
+    let path = PathBuf::from(&project_path);
+    
+    // Vérifier que le répertoire existe
+    if !path.exists() {
+        return Err(format!("Répertoire introuvable: {}", project_path));
+    }
+    
+    // Vérifier que c'est un dépôt Git
+    let git_dir = path.join(".git");
+    if !git_dir.exists() {
+        return Err(format!("Ce n'est pas un dépôt Git: {}", project_path));
+    }
+    
+    // Exécuter git pull
+    let output = Command::new("git")
+        .arg("pull")
+        .current_dir(&path)
+        .output()
+        .map_err(|e| {
+            format!(
+                "Failed to execute git pull: {}. Make sure git is installed.",
+                e
+            )
+        })?;
+    
+    if !output.status.success() {
+        let error_msg = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Git pull failed: {}", error_msg));
+    }
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout.to_string())
 }
 
 /// Extrait le nom du projet depuis une URL Git

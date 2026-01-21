@@ -17,7 +17,10 @@ export async function pickProjectFolder(): Promise<string> {
  */
 export async function autoscanProject(path: string): Promise<ProjectScanResult> {
   try {
-    return await invoke<ProjectScanResult>("autoscan_project", { rootPath: path });
+    // Tauri v2 converts camelCase to snake_case automatically
+    return await invoke<ProjectScanResult>("autoscan_project", { 
+      rootPath: path 
+    });
   } catch (error) {
     throw new Error(`Failed to autoscan project: ${error}`);
   }
@@ -37,3 +40,15 @@ export async function cloneGitRepo(url: string, targetDir?: string): Promise<str
   }
 }
 
+/**
+ * Met à jour un dépôt Git existant (git pull)
+ */
+export async function pullGitRepo(projectPath: string): Promise<string> {
+  try {
+    return await invoke<string>("pull_git_repo", {
+      projectPath,
+    });
+  } catch (error) {
+    throw new Error(`Failed to pull repo: ${error}`);
+  }
+}
