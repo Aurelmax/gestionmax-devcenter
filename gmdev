@@ -163,6 +163,10 @@ find_service_pid() {
             # Chercher les processus next.js (next dev, next-server, node next)
             pgrep -f "next.*dev\|next-server\|node.*next" | head -1
             ;;
+        mini-gods|minigods)
+            # Chercher les processus SSH qui exécutent mini-gods
+            pgrep -f "ssh.*mini-gods\|ssh.*minigods" | head -1
+            ;;
     esac
 }
 
@@ -190,8 +194,11 @@ start_service() {
         front|frontend)
             start_frontend "$config"
             ;;
+        mini-gods|minigods)
+            start_ssh_service "$config" "mini-gods"
+            ;;
         *)
-            error "Service inconnu: $service. Services valides: tunnel, back, front"
+            error "Service inconnu: $service. Services valides: tunnel, back, front, mini-gods"
             ;;
     esac
 }
@@ -246,6 +253,96 @@ start_tunnel() {
         success "Tunnel SSH actif (PID: $pid)"
     else
         error "Échec du démarrage du tunnel SSH"
+    fi
+}
+
+# Démarre un service SSH (exécute une commande sur le serveur distant)
+start_ssh_service() {
+    local config="$1"
+    local service_name="$2"
+    
+    local host=$(echo "$config" | jq -r '.tunnel.host // empty')
+    local user=$(echo "$config" | jq -r '.tunnel.user // "root"')
+    local port=$(echo "$config" | jq -r '.tunnel.port // 22')
+    local key=$(echo "$config" | jq -r '.tunnel.privateKey // empty')
+    
+    # Récupérer la commande SSH depuis la configuration du service
+    local ssh_command=$(echo "$config" | jq -r ".commands.${service_name} // empty")
+    local service_port=$(echo "$config" | jq -r ".ports.${service_name} // empty")
+    local project_id=$(echo "$config" | jq -r '.id // "unknown"')
+    local log_file="$GMDEV_LOG_DIR/${project_id}.${service_name}.log"
+    local pf; pf="$(pidfile "$project_id" "$service_name")"
+    
+    if [ -z "$host" ] || [ "$host" == "null" ]; then
+        error "Tunnel non configuré pour ce projet"
+    fi
+    
+    if [ -z "$ssh_command" ] || [ "$ssh_command" == "null" ]; then
+        error "Commande SSH non configurée pour le service '$service_name'. Ajoutez 'commands.${service_name}' dans la configuration."
+    fi
+    
+    if [ -z "$key" ] || [ "$key" == "null" ]; then
+        key="$HOME/.ssh/id_ed25519"
+    fi
+    
+    if [ ! -f "$key" ]; then
+        error "Clé SSH introuvable: $key"
+    fi
+    
+    # Vérifier si déjà en cours d'exécution
+    local existing_pid=""
+    if [ -n "$service_port" ] && [ "$service_port" != "null" ] && [ "$service_port" != "0" ]; then
+        existing_pid=$(find_service_pid "$service_name" "$service_port")
+    else
+        # Vérifier par PID file
+        if [ -f "$pf" ]; then
+            local saved_pid=$(cat "$pf" 2>/dev/null)
+            if [ -n "$saved_pid" ] && ps -p "$saved_pid" >/dev/null 2>&1; then
+                existing_pid="$saved_pid"
+            fi
+        fi
+    fi
+    
+    if [ -n "$existing_pid" ]; then
+        warning "Service '$service_name' déjà en cours d'exécution (PID: $existing_pid)"
+        return 0
+    fi
+    
+    info "📝 Logs ${service_name} → $log_file"
+    echo "[$(ts)] gmdev start ${service_name} (cmd=$ssh_command, host=$host)" >> "$log_file"
+    
+    info "🚀 Démarrage ${service_name} via SSH sur $host..."
+    
+    # Exécuter la commande SSH en arrière-plan
+    ssh -i "$key" \
+        -p "$port" \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -o ServerAliveInterval=60 \
+        -o ServerAliveCountMax=3 \
+        "${user}@${host}" \
+        "$ssh_command" >>"$log_file" 2>&1 &
+    
+    local pid=$!
+    echo "$pid" > "$pf"
+    sleep 2
+    
+    # Vérifier si le processus tourne
+    if ps -p "$pid" >/dev/null 2>&1; then
+        success "${service_name} démarré via SSH (PID: $pid)"
+    else
+        # Vérifier si le port est utilisé (si configuré)
+        if [ -n "$service_port" ] && [ "$service_port" != "null" ] && [ "$service_port" != "0" ]; then
+            local actual_pid=$(find_service_pid "$service_name" "$service_port")
+            if [ -n "$actual_pid" ]; then
+                echo "$actual_pid" > "$pf"
+                success "${service_name} démarré via SSH (PID: $actual_pid)"
+            else
+                error "Échec du démarrage de ${service_name}. Vérifiez les logs: $log_file"
+            fi
+        else
+            error "Échec du démarrage de ${service_name}. Vérifiez les logs: $log_file"
+        fi
     fi
 }
 
@@ -448,8 +545,11 @@ stop_service() {
         front|frontend)
             stop_frontend "$config"
             ;;
+        mini-gods|minigods)
+            stop_ssh_service "$config" "mini-gods"
+            ;;
         *)
-            error "Service inconnu: $service. Services valides: tunnel, back, front"
+            error "Service inconnu: $service. Services valides: tunnel, back, front, mini-gods"
             ;;
     esac
 }
@@ -473,6 +573,77 @@ stop_tunnel() {
         success "Tunnel arrêté"
     else
         error "Échec de l'arrêt du tunnel"
+    fi
+}
+
+# Arrête un service SSH
+stop_ssh_service() {
+    local config="$1"
+    local service_name="$2"
+    
+    local service_port=$(echo "$config" | jq -r ".ports.${service_name} // empty")
+    local project_id=$(echo "$config" | jq -r '.id // "unknown"')
+    local pf; pf="$(pidfile "$project_id" "$service_name")"
+    
+    # Trouver le PID
+    local pid=""
+    if [ -n "$service_port" ] && [ "$service_port" != "null" ] && [ "$service_port" != "0" ]; then
+        pid=$(find_service_pid "$service_name" "$service_port")
+    fi
+    
+    # Si pas trouvé par port, essayer le PID file
+    if [ -z "$pid" ] && [ -f "$pf" ]; then
+        local saved_pid=$(cat "$pf" 2>/dev/null)
+        if [ -n "$saved_pid" ] && ps -p "$saved_pid" >/dev/null 2>&1; then
+            pid="$saved_pid"
+        fi
+    fi
+    
+    if [ -z "$pid" ]; then
+        warning "Service '$service_name' non en cours d'exécution"
+        rm -f "$pf" 2>/dev/null || true
+        return 0
+    fi
+    
+    info "Arrêt du service '$service_name' (PID: $pid)..."
+    
+    # Tuer le processus SSH
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    
+    # Si c'est un processus SSH, tuer aussi les processus enfants sur le serveur distant
+    local host=$(echo "$config" | jq -r '.tunnel.host // empty')
+    local user=$(echo "$config" | jq -r '.tunnel.user // "root"')
+    local ssh_port=$(echo "$config" | jq -r '.tunnel.port // 22')
+    local key=$(echo "$config" | jq -r '.tunnel.privateKey // empty')
+    
+    if [ -n "$host" ] && [ "$host" != "null" ]; then
+        if [ -z "$key" ] || [ "$key" == "null" ]; then
+            key="$HOME/.ssh/id_ed25519"
+        fi
+        
+        # Récupérer la commande pour trouver et tuer le processus sur le serveur distant
+        local ssh_command=$(echo "$config" | jq -r ".commands.${service_name} // empty")
+        if [ -n "$ssh_command" ] && [ "$ssh_command" != "null" ]; then
+            # Extraire le nom du processus depuis la commande (approximation)
+            local process_name=$(echo "$ssh_command" | awk '{print $NF}' | xargs basename 2>/dev/null || echo "")
+            if [ -n "$process_name" ]; then
+                # Tuer les processus correspondants sur le serveur distant
+                ssh -i "$key" \
+                    -p "$ssh_port" \
+                    -o StrictHostKeyChecking=no \
+                    -o UserKnownHostsFile=/dev/null \
+                    "${user}@${host}" \
+                    "pkill -f '$process_name' || true" 2>/dev/null || true
+            fi
+        fi
+    fi
+    
+    if ! ps -p "$pid" >/dev/null 2>&1; then
+        rm -f "$pf" 2>/dev/null || true
+        success "Service '$service_name' arrêté"
+    else
+        error "Échec de l'arrêt du service '$service_name'"
     fi
 }
 
@@ -645,6 +816,7 @@ doctor() {
 # Affiche le statut des services
 show_status() {
     local project_id="${1:-}"
+    local format="${2:-}"  # "--json" ou "--format json"
     
     if [ -z "$project_id" ]; then
         project_id=$(detect_project)
@@ -659,28 +831,86 @@ show_status() {
     local backend_port=$(echo "$config" | jq -r '.ports.backend // 3000')
     local frontend_port=$(echo "$config" | jq -r '.ports.frontend // 3000')
     
+    # Tunnel
+    local tunnel_pid=$(find_service_pid "tunnel" "$tunnel_port")
+    local tunnel_state="stopped"
+    if [ -n "$tunnel_pid" ]; then
+        tunnel_state="running"
+    fi
+    
+    # Backend
+    local backend_pid=$(find_service_pid "back" "$backend_port")
+    local backend_state="stopped"
+    if [ -n "$backend_pid" ]; then
+        backend_state="running"
+    fi
+    
+    # Frontend
+    local frontend_pid=$(find_service_pid "front" "$frontend_port")
+    local frontend_state="stopped"
+    if [ -n "$frontend_pid" ]; then
+        frontend_state="running"
+    fi
+    
+    # Si format JSON demandé
+    local json_format=false
+    if [ "$format" = "--json" ]; then
+        json_format=true
+    elif [ "$format" = "--format" ] && [ "${3:-}" = "json" ]; then
+        json_format=true
+    fi
+    
+    if [ "$json_format" = "true" ]; then
+        # Retourner JSON stable
+        jq -n \
+          --arg tunnel_state "$tunnel_state" \
+          --arg backend_state "$backend_state" \
+          --arg frontend_state "$frontend_state" \
+          --argjson tunnel_port "$tunnel_port" \
+          --argjson backend_port "$backend_port" \
+          --argjson frontend_port "$frontend_port" \
+          --arg tunnel_pid "${tunnel_pid:-}" \
+          --arg backend_pid "${backend_pid:-}" \
+          --arg frontend_pid "${frontend_pid:-}" \
+          '{
+            "services": {
+              "tunnel": {
+                "state": $tunnel_state,
+                "port": ($tunnel_port | tonumber),
+                "pid": (if $tunnel_pid == "" then null else ($tunnel_pid | tonumber) end)
+              },
+              "backend": {
+                "state": $backend_state,
+                "port": ($backend_port | tonumber),
+                "pid": (if $backend_pid == "" then null else ($backend_pid | tonumber) end)
+              },
+              "frontend": {
+                "state": $frontend_state,
+                "port": ($frontend_port | tonumber),
+                "pid": (if $frontend_pid == "" then null else ($frontend_pid | tonumber) end)
+              }
+            }
+          }'
+        return 0
+    fi
+    
+    # Format texte (par défaut)
     echo -e "${BLUE}📊 Statut des services - $(echo "$config" | jq -r '.name // "Projet inconnu"')${NC}"
     echo ""
     
-    # Tunnel
-    local tunnel_pid=$(find_service_pid "tunnel" "$tunnel_port")
-    if [ -n "$tunnel_pid" ]; then
+    if [ "$tunnel_state" = "running" ]; then
         echo -e "  ${GREEN}●${NC} Tunnel SSH: ${GREEN}RUNNING${NC} (PID: $tunnel_pid, Port: $tunnel_port)"
     else
         echo -e "  ${RED}●${NC} Tunnel SSH: ${RED}STOPPED${NC}"
     fi
     
-    # Backend
-    local backend_pid=$(find_service_pid "back" "$backend_port")
-    if [ -n "$backend_pid" ]; then
+    if [ "$backend_state" = "running" ]; then
         echo -e "  ${GREEN}●${NC} Backend: ${GREEN}RUNNING${NC} (PID: $backend_pid, Port: $backend_port)"
     else
         echo -e "  ${RED}●${NC} Backend: ${RED}STOPPED${NC}"
     fi
     
-    # Frontend
-    local frontend_pid=$(find_service_pid "front" "$frontend_port")
-    if [ -n "$frontend_pid" ]; then
+    if [ "$frontend_state" = "running" ]; then
         echo -e "  ${GREEN}●${NC} Frontend: ${GREEN}RUNNING${NC} (PID: $frontend_pid, Port: $frontend_port)"
     else
         echo -e "  ${RED}●${NC} Frontend: ${RED}STOPPED${NC}"
@@ -1013,7 +1243,17 @@ main() {
     
     case "$command" in
         status)
-            show_status "${2:-}"
+            # Vérifier si --json ou --format json est demandé
+            if [ "${2:-}" = "--json" ]; then
+                # gmdev status --json [project_id]
+                show_status "${3:-}" "--json"
+            elif [ "${2:-}" = "--format" ] && [ "${3:-}" = "json" ]; then
+                # gmdev status --format json [project_id]
+                show_status "${4:-}" "--format" "json"
+            else
+                # gmdev status [project_id]
+                show_status "${2:-}"
+            fi
             ;;
         start)
             if [ -z "${2:-}" ]; then
@@ -1063,6 +1303,15 @@ main() {
             if [ -n "$backend_path" ] && [ "$backend_path" != "null" ] && [ "$backend_path" != "" ] && [ "$tunnel_enabled" = "true" ]; then
                 info "📡 Démarrage du tunnel..."
                 start_tunnel "$config" || warning "Échec du démarrage du tunnel - continuation..."
+                sleep 1
+            fi
+            
+            # Mini-gods (service SSH) si configuré
+            local mini_gods_command
+            mini_gods_command=$(echo "$config" | jq -r '.commands["mini-gods"] // empty')
+            if [ -n "$mini_gods_command" ] && [ "$mini_gods_command" != "null" ] && [ "$mini_gods_command" != "" ]; then
+                info "🎮 Démarrage de mini-gods..."
+                start_ssh_service "$config" "mini-gods" || warning "Échec du démarrage de mini-gods - continuation..."
                 sleep 1
             fi
             

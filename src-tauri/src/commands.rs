@@ -9,6 +9,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::autoscan::ProjectV3;
 use crate::projects_v3::{load_projects_v3, ProjectConfigV3};
+use crate::gmd::{run_gmd, run_gmd_streaming, is_gmd_available, GmdCommand, GmdRunId};
 
 #[derive(Serialize)]
 pub struct ScriptResult {
@@ -63,34 +64,38 @@ fn resolve_script(service: &str, action: &str) -> Option<&'static str> {
     }
 }
 
-/// Exécute une commande gmdev
+/// Exécute une commande gmdev (wrapper pour compatibilité)
+/// 
+/// ⚠️ DÉPRÉCIÉ : Utiliser `run_gmd()` depuis le module `gmd` à la place
+/// Cette fonction est conservée pour compatibilité avec le code existant
+/// et sera progressivement remplacée par `run_gmd()`.
 fn run_gmdev_command(args: &[&str], cwd: Option<PathBuf>) -> ScriptResult {
-    let mut cmd = Command::new("gmdev");
-    cmd.args(args);
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
+    let args_vec: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let cmd = GmdCommand {
+        args: args_vec,
+        cwd,
+        project_id: None, // L'ancienne fonction ne gérait pas project_id
+    };
     
-    match cmd.output() {
-        Ok(output) => ScriptResult {
-            stdout: String::from_utf8_lossy(&output.stdout).to_string(),
-            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
-            code: output.status.code().unwrap_or(-1),
+    match run_gmd(cmd) {
+        Ok(result) => ScriptResult {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            code: result.code,
         },
         Err(err) => ScriptResult {
             stdout: String::new(),
-            stderr: format!("Erreur lors de l'exécution de gmdev: {}. Assurez-vous que gmdev est installé et dans votre PATH.", err),
+            stderr: err,
             code: -1,
         },
     }
 }
 
-/// Vérifie si gmdev est disponible
+/// Vérifie si gmdev est disponible (wrapper pour compatibilité)
+/// 
+/// ⚠️ DÉPRÉCIÉ : Utiliser `is_gmd_available()` depuis le module `gmd` à la place
 fn is_gmdev_available() -> bool {
-    Command::new("gmdev")
-        .arg("--version")
-        .output()
-        .is_ok()
+    is_gmd_available()
 }
 
 /// OBSOLÈTE depuis v2.0 - Migration vers gmdev
@@ -103,7 +108,7 @@ fn run_embedded_script(
     _envs: Vec<(String, String)>,
 ) -> ScriptResult {
     // Vérifier que gmdev est disponible (OBLIGATOIRE)
-    if !is_gmdev_available() {
+    if !is_gmd_available() {
         return ScriptResult {
             stdout: String::new(),
             stderr: "gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé. Installez-le et ajoutez-le à votre PATH.".to_string(),
@@ -900,7 +905,7 @@ pub async fn start_service_v3(
     service: String,
 ) -> Result<ScriptResult, String> {
     // gmdev est la seule source de vérité - OBLIGATOIRE
-    if !is_gmdev_available() {
+    if !is_gmd_available() {
         return Err("gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé.".to_string());
     }
     
@@ -916,15 +921,15 @@ pub async fn start_service_v3(
         _ => return Err(format!("Service inconnu: {}", service)),
     };
     
-    // Appeler gmdev start (seule source de vérité)
+    // Appeler gmdev start avec le project_id explicite (seule source de vérité)
     let cwd = Some(PathBuf::from(&project.root_path));
-    Ok(run_gmdev_command(&["start", gmdev_service], cwd))
+    Ok(run_gmdev_command(&["start", gmdev_service, &project_id], cwd))
 }
 
 #[tauri::command]
 pub async fn status_service_v3(project_id: String, service: String) -> Result<String, String> {
     // gmdev est la seule source de vérité - OBLIGATOIRE
-    if !is_gmdev_available() {
+    if !is_gmd_available() {
         return Err("gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé.".to_string());
     }
     
@@ -939,8 +944,8 @@ pub async fn status_service_v3(project_id: String, service: String) -> Result<St
     let project =
         get_project_by_id(&cfg, &project_id).ok_or_else(|| "Project not found".to_string())?;
     
-    // Utiliser gmdev status (seule source de vérité)
-    let result = run_gmdev_command(&["status"], Some(PathBuf::from(&project.root_path)));
+    // Utiliser gmdev status avec le project_id explicite (seule source de vérité)
+    let result = run_gmdev_command(&["status", &project_id], Some(PathBuf::from(&project.root_path)));
     
     // Parser la sortie de gmdev status
     // Format attendu: tunnel(front/back) + ports + pid + last logs
@@ -964,7 +969,7 @@ pub async fn stop_service_v3(
     service: String,
 ) -> Result<ScriptResult, String> {
     // gmdev est la seule source de vérité - OBLIGATOIRE
-    if !is_gmdev_available() {
+    if !is_gmd_available() {
         return Err("gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé.".to_string());
     }
     
@@ -980,14 +985,14 @@ pub async fn stop_service_v3(
         _ => return Err(format!("Service inconnu: {}", service)),
     };
     
-    // Appeler gmdev stop (seule source de vérité)
+    // Appeler gmdev stop avec le project_id explicite (seule source de vérité)
     let cwd = Some(PathBuf::from(&project.root_path));
-    Ok(run_gmdev_command(&["stop", gmdev_service], cwd))
+    Ok(run_gmdev_command(&["stop", gmdev_service, &project_id], cwd))
 }
 #[tauri::command]
 pub async fn kill_zombies_v3(_app_handle: AppHandle) -> Result<ScriptResult, String> {
     // gmdev est la seule source de vérité - OBLIGATOIRE
-    if !is_gmdev_available() {
+    if !is_gmd_available() {
         return Err("gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé.".to_string());
     }
     
@@ -996,9 +1001,11 @@ pub async fn kill_zombies_v3(_app_handle: AppHandle) -> Result<ScriptResult, Str
 }
 
 /// Obtient le statut complet via gmdev status
+/// 
+/// Essaie d'abord `gmdev status --json` si disponible, sinon utilise le format texte
 #[tauri::command]
 pub async fn get_gmdev_status(project_id: String) -> Result<String, String> {
-    if !is_gmdev_available() {
+    if !is_gmd_available() {
         return Err("gmdev n'est pas disponible. Assurez-vous qu'il est installé et dans votre PATH.".to_string());
     }
     
@@ -1006,7 +1013,16 @@ pub async fn get_gmdev_status(project_id: String) -> Result<String, String> {
     let project =
         get_project_by_id(&cfg, &project_id).ok_or_else(|| "Project not found".to_string())?;
     
-    let result = run_gmdev_command(&["status"], Some(PathBuf::from(&project.root_path)));
+    // Essayer d'abord avec --json si disponible
+    let json_result = run_gmdev_command(&["status", "--json", &project_id], Some(PathBuf::from(&project.root_path)));
+    
+    if json_result.code == 0 && !json_result.stdout.trim().is_empty() {
+        // JSON disponible et valide
+        return Ok(json_result.stdout);
+    }
+    
+    // Fallback sur le format texte standard
+    let result = run_gmdev_command(&["status", &project_id], Some(PathBuf::from(&project.root_path)));
     
     if result.code == 0 {
         Ok(result.stdout)
@@ -1039,7 +1055,8 @@ pub async fn get_gmdev_logs(
     
     let tail_count = tail.unwrap_or(200);
     let tail_str = tail_count.to_string();
-    let args = vec!["logs", gmdev_service, "--tail", &tail_str];
+    // Passer le project_id comme dernier argument après --tail
+    let args = vec!["logs", gmdev_service, "--tail", &tail_str, &project_id];
     
     let result = run_gmdev_command(&args, Some(PathBuf::from(&project.root_path)));
     
@@ -1058,7 +1075,7 @@ pub async fn restart_service_v3(
     service: String,
 ) -> Result<ScriptResult, String> {
     // gmdev est la seule source de vérité - OBLIGATOIRE
-    if !is_gmdev_available() {
+    if !is_gmd_available() {
         return Err("gmdev n'est pas disponible. gmdev est le runtime officiel et doit être installé.".to_string());
     }
     
@@ -1074,9 +1091,65 @@ pub async fn restart_service_v3(
         _ => return Err(format!("Service inconnu: {}", service)),
     };
     
-    // Appeler gmdev restart (seule source de vérité)
+    // Appeler gmdev restart avec le project_id explicite (seule source de vérité)
     let cwd = Some(PathBuf::from(&project.root_path));
-    Ok(run_gmdev_command(&["restart", gmdev_service], cwd))
+    Ok(run_gmdev_command(&["restart", gmdev_service, &project_id], cwd))
+}
+
+/// Commande Tauri pour exécuter une commande gmdev de manière centralisée avec streaming
+/// 
+/// Cette commande expose le module `gmd` au frontend et permet d'exécuter
+/// n'importe quelle commande gmdev avec gestion centralisée du project_id et du cwd.
+/// 
+/// **Mode streaming**: Cette fonction retourne immédiatement un `runId` et émet des events
+/// Tauri (`gmd:log` et `gmd:exit`) pour le streaming live des logs.
+/// 
+/// # Arguments
+/// - `args`: Liste des arguments à passer à gmdev (ex: ["up"], ["down"], ["status"])
+/// - `project_id`: ID du projet (optionnel, sera ajouté comme dernier argument)
+/// - `cwd`: Répertoire de travail (optionnel, utilisé pour détection auto si project_id non fourni)
+/// - `app`: Handle de l'application Tauri pour émettre les events
+/// 
+/// # Events émis
+/// - `gmd:log`: Pour chaque ligne de stdout/stderr (payload: `{ runId, ts, level, line, cmd, cwd }`)
+/// - `gmd:exit`: Quand la commande se termine (payload: `{ runId, exitCode }`)
+/// 
+/// # Exemple
+/// ```typescript
+/// const { runId } = await invoke("run_gmd_command", {
+///   args: ["up"],
+///   projectId: "my-project",
+///   cwd: "/path/to/project"
+/// });
+/// 
+/// // Écouter les events
+/// listen("gmd:log", (event) => {
+///   if (event.payload.runId === runId) {
+///     console.log(event.payload.line);
+///   }
+/// });
+/// ```
+#[tauri::command]
+pub async fn run_gmd_command(
+    args: Vec<String>,
+    project_id: Option<String>,
+    cwd: Option<String>,
+    app: AppHandle,
+) -> Result<GmdRunId, String> {
+    // Générer un runId unique
+    let run_id = format!("gmd-{}", uuid::Uuid::new_v4().to_string());
+    
+    let cwd_path = cwd.map(PathBuf::from);
+    let cmd = GmdCommand {
+        args,
+        cwd: cwd_path,
+        project_id,
+    };
+    
+    // Lancer le streaming en arrière-plan
+    run_gmd_streaming(cmd, app, run_id.clone())?;
+    
+    Ok(GmdRunId { run_id })
 }
 
 /// Tue un processus par son PID

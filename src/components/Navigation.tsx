@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from "react-router-dom";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LayoutDashboard, Terminal, Settings, Info, BookOpen } from "lucide-react";
+import { LayoutDashboard, Terminal, Settings, Info, BookOpen, Network } from "lucide-react";
 
 export default function Navigation() {
   const navigate = useNavigate();
@@ -8,6 +8,7 @@ export default function Navigation() {
 
   const getActiveTab = () => {
     if (location.pathname === "/dashboard") return "dashboard";
+    if (location.pathname === "/api-tester") return "api-tester";
     if (location.pathname === "/logs") return "logs";
     if (location.pathname === "/config") return "config";
     if (location.pathname === "/about") return "about";
@@ -27,6 +28,10 @@ export default function Navigation() {
             <TabsTrigger value="dashboard" className="data-[state=active]:bg-gray-700">
               <LayoutDashboard className="w-4 h-4 mr-2" />
               Dashboard
+            </TabsTrigger>
+            <TabsTrigger value="api-tester" className="data-[state=active]:bg-gray-700">
+              <Network className="w-4 h-4 mr-2" />
+              API Tester
             </TabsTrigger>
             <TabsTrigger value="logs" className="data-[state=active]:bg-gray-700">
               <Terminal className="w-4 h-4 mr-2" />

@@ -1,6 +1,7 @@
 mod autoscan;
 mod commands;
 mod git_import;
+mod gmd;
 mod projects;
 mod projects_v3;
 mod state;
@@ -51,7 +52,8 @@ pub fn run() {
             scan_independent_repos,
             get_gmdev_status,
             get_gmdev_logs,
-            restart_service_v3
+            restart_service_v3,
+            run_gmd_command
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

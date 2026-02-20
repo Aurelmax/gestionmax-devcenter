@@ -1,27 +1,19 @@
 import { useState, useEffect, useCallback } from "react";
 
-import { Loader2, RefreshCw, Globe, ExternalLink } from "lucide-react";
-import { invoke } from "@tauri-apps/api/core";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { Loader2, RefreshCw } from "lucide-react";
 
 import { ProjectV3 } from "@/types/ProjectV3";
 import { formatUptime } from "@/lib/system";
 import { useToast } from "@/components/ui/use-toast";
-import {
-  ServiceName,
-  startServiceV3,
-  stopServiceV3,
-  getServiceStatusV3,
-  ScriptResult,
-  killZombiesV3,
-} from "@/lib/commands";
 import { scanIndependentRepos } from "@/lib/autoscanV3";
 import { pullGitRepo } from "@/lib/autoscan";
-import { loadProjectsV3, updateProjectV3 } from "@/lib/projectManager";
+import { loadProjectsV3 } from "@/lib/projectManager";
+import { ProjectSwitcher } from "@/components/ProjectSwitcher";
+import { GmdLogs } from "@/components/GmdLogs";
+import { SessionUI } from "@/components/SessionUI";
+import { useRuntime } from "@/core/runtime/runtime.store";
 
 const POLL_INTERVAL = 1500;
-
-type ServiceState = "running" | "stopped";
 
 interface SystemStats {
   cpu: number;
@@ -36,6 +28,7 @@ const useSystemStats = () => {
 
   const loadStats = useCallback(async () => {
     try {
+      const { invoke } = await import("@tauri-apps/api/core");
       const current = await invoke<SystemStats>("get_system_stats_v3");
       setStats(current);
     } catch {
@@ -54,34 +47,13 @@ const useSystemStats = () => {
   return { stats, isLoading };
 };
 
-const useServiceStatus = (projectId: string, service: ServiceName) => {
-  const [status, setStatus] = useState<ServiceState>("stopped");
-
-  const refresh = useCallback(async () => {
-    try {
-      const result = await getServiceStatusV3(projectId, service);
-      setStatus(result === "RUNNING" ? "running" : "stopped");
-    } catch {
-      setStatus("stopped");
-    }
-  }, [projectId, service]);
-
-  useEffect(() => {
-    refresh();
-    const handle = setInterval(refresh, POLL_INTERVAL);
-    return () => clearInterval(handle);
-  }, [refresh]);
-
-  return { status, refresh };
-};
-
 export default function Dashboard() {
   const [projects, setProjects] = useState<ProjectV3[]>([]);
-  const [active, setActive] = useState<ProjectV3 | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const { stats, isLoading } = useSystemStats();
   const { toast } = useToast();
   const [pullingAll, setPullingAll] = useState(false);
+  const { refreshActiveStatus, state } = useRuntime();
 
   const scanProjects = async (showToast = true) => {
     setIsScanning(true);
@@ -192,13 +164,7 @@ export default function Dashboard() {
       // gmdev est la source de vérité, DevCenter ne crée jamais de projet
       const config = await loadProjectsV3();
       const projectList = config.projects || [];
-      
       setProjects(projectList);
-      if (projectList.length > 0) {
-        // Sélectionner le projet actif ou le premier
-        const activeProject = projectList.find(p => p.enabled) || projectList[0];
-        setActive(activeProject);
-      }
     } catch (error) {
       console.error("Failed to load projects:", error);
       // Si le fichier n'existe pas ou est vide, on affiche une liste vide
@@ -211,82 +177,19 @@ export default function Dashboard() {
     loadProjects();
   }, [loadProjects]);
 
-  // Fonction pour activer/désactiver un projet
-  const handleToggleEnabled = async (project: ProjectV3) => {
-    try {
-      const config = await loadProjectsV3();
-      const projectList = config.projects || [];
-      
-      if (project.enabled) {
-        // Désactiver ce projet
-        const updatedProject = { ...project, enabled: false };
-        await updateProjectV3(updatedProject);
-        
-        // Arrêter tous les services de ce projet
-        if (project.backendPath && project.backendPath.trim() !== "") {
-          try {
-            await stopServiceV3(project.id, "backend");
-            await stopServiceV3(project.id, "tunnel");
-          } catch (e) {
-            console.warn("Erreur lors de l'arrêt du backend/tunnel:", e);
-          }
-        }
-        try {
-          await stopServiceV3(project.id, "frontend");
-        } catch (e) {
-          console.warn("Erreur lors de l'arrêt du frontend:", e);
-        }
-        
-        toast({
-          title: "Projet désactivé",
-          description: `Le projet "${project.name}" a été désactivé et ses services arrêtés.`,
-        });
-      } else {
-        // Activer ce projet (désactiver les autres)
-        // 1. Désactiver tous les autres projets
-        for (const p of projectList) {
-          if (p.id !== project.id && p.enabled) {
-            const updatedOther = { ...p, enabled: false };
-            await updateProjectV3(updatedOther);
-            
-            // Arrêter les services des autres projets
-            if (p.backendPath && p.backendPath.trim() !== "") {
-              try {
-                await stopServiceV3(p.id, "backend");
-                await stopServiceV3(p.id, "tunnel");
-              } catch (e) {
-                console.warn(`Erreur lors de l'arrêt du backend/tunnel de ${p.name}:`, e);
-              }
-            }
-            try {
-              await stopServiceV3(p.id, "frontend");
-            } catch (e) {
-              console.warn(`Erreur lors de l'arrêt du frontend de ${p.name}:`, e);
-            }
-          }
-        }
-        
-        // 2. Activer ce projet
-        const updatedProject = { ...project, enabled: true };
-        await updateProjectV3(updatedProject);
-        setActive(updatedProject);
-        
-        toast({
-          title: "Projet activé",
-          description: `Le projet "${project.name}" est maintenant actif. Les autres projets ont été désactivés.`,
-        });
-      }
-      
-      // Recharger la liste des projets
-      await loadProjects();
-    } catch (error) {
-      toast({
-        title: "Erreur",
-        description: `Impossible de modifier l'état du projet: ${error instanceof Error ? error.message : "Unknown error"}`,
-        variant: "destructive",
-      });
-    }
-  };
+  // Polling automatique du statut du projet actif uniquement
+  // Ne poll que si un projet est actif (modèle mono-projet)
+  useEffect(() => {
+    if (!state.activeProjectId) return;
+
+    const interval = setInterval(() => {
+      refreshActiveStatus().catch(err => 
+        console.warn("Failed to refresh active status:", err)
+      );
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [state.activeProjectId, refreshActiveStatus]);
 
   return (
     <div className="p-6 space-y-10">
@@ -315,13 +218,28 @@ export default function Dashboard() {
               )}
             </button>
           </div>
-          <ProjectListSection
-            projects={projects}
-            active={active}
-            onSelect={(p) => setActive(p)}
-            onToggleEnabled={handleToggleEnabled}
-          />
-          {active && <ActiveProjectSection project={active} />}
+          
+          {/* Project Switcher : Liste simple avec bouton Start/Stop */}
+          <ProjectSwitcher projects={projects} />
+          
+          {/* Logs gmdev en temps réel */}
+          <GmdLogs />
+          
+          {/* Session UI : Front Repo + Back Repo */}
+          <div className="border-t border-gray-700 pt-6">
+            <h2 className="text-2xl font-semibold text-white mb-4">Session</h2>
+            <SessionUI />
+          </div>
+          
+          {/* Indication si une commande est en cours */}
+          {state.commandInFlight && (
+            <div className="p-4 rounded-lg border border-yellow-500/30 bg-yellow-900/20">
+              <p className="text-yellow-300 text-sm flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Commande en cours...
+              </p>
+            </div>
+          )}
         </div>
       ) : (
         <div className="rounded-xl border border-dashed border-gray-700 p-8 text-center">
@@ -394,382 +312,6 @@ function SystemSection({
   );
 }
 
-function ActiveProjectSection({ project }: { project: ProjectV3 }) {
-  const backendStatus = useServiceStatus(project.id, "backend");
-  const frontendStatus = useServiceStatus(project.id, "frontend");
-  const tunnelStatus = useServiceStatus(project.id, "tunnel");
-  const { toast } = useToast();
-  const [loadingService, setLoadingService] = useState<string | null>(null);
-
-  const [killing, setKilling] = useState(false);
-  const [startingAll, setStartingAll] = useState(false);
-
-  // Empêcher le démarrage si le projet n'est pas activé
-  // true par défaut pour rétrocompatibilité (anciens projets sans champ enabled)
-  const isProjectEnabled = project.enabled !== false;
-
-  // Fonction pour ouvrir le frontend
-  const handleOpenFrontend = async () => {
-    try {
-      await openUrl(`http://localhost:${project.ports.frontend}`);
-    } catch (error) {
-      toast({
-        title: "Erreur",
-        description: `Impossible d'ouvrir le frontend: ${error instanceof Error ? error.message : "Erreur inconnue"}`,
-        variant: "destructive",
-      });
-    }
-  };
-
-  // Fonction pour ouvrir le backend admin
-  const handleOpenBackendAdmin = async () => {
-    try {
-      const adminPath = project.backendType === "directus" ? "/admin" : "/admin";
-      await openUrl(`http://localhost:${project.ports.backend}${adminPath}`);
-    } catch (error) {
-      toast({
-        title: "Erreur",
-        description: `Impossible d'ouvrir l'admin backend: ${error instanceof Error ? error.message : "Erreur inconnue"}`,
-        variant: "destructive",
-      });
-    }
-  };
-
-  const handleKillZombies = async () => {
-    setKilling(true);
-    try {
-      const result = await killZombiesV3();
-      toast({
-        title: "Kill Zombies",
-        description: result.stdout || result.stderr || `Code ${result.code}`,
-      });
-    } catch (error) {
-      toast({
-        title: "Erreur",
-        description: error instanceof Error ? error.message : "Impossible de tuer les zombies",
-        variant: "destructive",
-      });
-    } finally {
-      setKilling(false);
-    }
-  };
-
-
-  const handleStartAll = async () => {
-    // Empêcher le démarrage si le projet n'est pas activé
-    if (!isProjectEnabled) {
-      toast({
-        title: "Projet inactif",
-        description: "Veuillez activer ce projet avant de démarrer ses services.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setStartingAll(true);
-    try {
-      // Démarrer dans l'ordre : tunnel → backend → frontend
-      // ⚠️ RÈGLE MÉTIER: Tunnel uniquement si backend existe
-      const services = [];
-      if (project.backendPath && project.backendPath.trim() !== "") {
-        services.push({ name: "tunnel", runner: () => startServiceV3(project.id, "tunnel") });
-      }
-      if (project.backendPath && project.backendPath.trim() !== "") {
-        services.push({ name: "backend", runner: () => startServiceV3(project.id, "backend") });
-      }
-      services.push({ name: "frontend", runner: () => startServiceV3(project.id, "frontend") });
-
-      for (const service of services) {
-        try {
-          const result = await service.runner();
-          if (result.code !== 0 && !result.stdout.includes("démarré")) {
-            console.warn(`${service.name} returned code ${result.code}`);
-          }
-          // Attendre un peu entre chaque démarrage
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        } catch (error) {
-          // Continuer même si un service échoue
-          console.error(`Erreur lors du démarrage de ${service.name}:`, error);
-        }
-      }
-
-      // Rafraîchir tous les statuts
-      tunnelStatus.refresh();
-      backendStatus.refresh();
-      frontendStatus.refresh();
-
-      toast({
-        title: "Démarrage en cours",
-        description: "Tous les services sont en cours de démarrage. Vérifiez leur statut dans quelques secondes.",
-      });
-    } catch (error) {
-      toast({
-        title: "Erreur",
-        description: error instanceof Error ? error.message : "Erreur lors du démarrage des services",
-        variant: "destructive",
-      });
-    } finally {
-      setStartingAll(false);
-    }
-  };
-
-  const handleAction =
-    (
-      service: ServiceName,
-      action: "start" | "stop",
-      refresh: () => void,
-      runner: () => Promise<ScriptResult>
-    ) =>
-    async () => {
-      // Empêcher le démarrage si le projet n'est pas activé
-      if (action === "start" && !isProjectEnabled) {
-        toast({
-          title: "Projet inactif",
-          description: "Veuillez activer ce projet avant de démarrer ses services.",
-          variant: "destructive",
-        });
-        return;
-      }
-
-      setLoadingService(`${service}-${action}`);
-      try {
-        const result = await runner();
-        toast({
-          title: action === "start" ? `Démarrage ${service}` : `Arrêt ${service}`,
-          description:
-            result.stdout ||
-            result.stderr ||
-            `Code ${result.code}`,
-        });
-        refresh();
-      } catch (error) {
-        toast({
-          title: "Erreur",
-          description:
-            error instanceof Error ? error.message : "Action échouée",
-          variant: "destructive",
-        });
-      } finally {
-        setLoadingService(null);
-      }
-    };
-
-  return (
-    <section className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-xl font-semibold text-white">Services – {project.name}</h2>
-        <div className="flex items-center gap-2">
-          {/* Badge activation */}
-          {!isProjectEnabled && (
-            <span className="px-2 py-1 text-xs rounded-full font-medium bg-red-600/20 text-red-300 border border-red-500/30">
-              ⚠️ INACTIF
-            </span>
-          )}
-          {/* Badge backend type */}
-          {project.backendType && (
-            <span className={`px-2 py-1 text-xs rounded-full font-medium ${
-              project.backendType === "payload" 
-                ? "bg-purple-600/20 text-purple-300 border border-purple-500/30" 
-                : "bg-blue-600/20 text-blue-300 border border-blue-500/30"
-            }`}>
-              {project.backendType === "payload" ? "Payload" : "Directus"}
-            </span>
-          )}
-          {/* Badge Local/Remote */}
-          <span className={`px-2 py-1 text-xs rounded-full font-medium ${
-            project.backendPath && project.backendPath.trim() !== ""
-              ? "bg-green-600/20 text-green-300 border border-green-500/30"
-              : "bg-orange-600/20 text-orange-300 border border-orange-500/30"
-          }`}>
-            {project.backendPath && project.backendPath.trim() !== "" ? "LOCAL" : "REMOTE"}
-          </span>
-        </div>
-      </div>
-
-      {!isProjectEnabled && (
-        <div className="bg-yellow-900/20 border border-yellow-500/30 rounded-lg p-4">
-          <p className="text-yellow-300 text-sm">
-            ⚠️ Ce projet est inactif. Activez-le pour pouvoir démarrer ses services.
-          </p>
-        </div>
-      )}
-
-      <div className="space-y-3">
-        <ServiceRow
-          label="Backend"
-          status={backendStatus.status}
-          port={project.ports.backend}
-          onStart={handleAction(
-            "backend",
-            "start",
-            backendStatus.refresh,
-            () => startServiceV3(project.id, "backend")
-          )}
-          onStop={handleAction(
-            "backend",
-            "stop",
-            backendStatus.refresh,
-            () => stopServiceV3(project.id, "backend")
-          )}
-          startLoading={loadingService === "backend-start"}
-          stopLoading={loadingService === "backend-stop"}
-        />
-        <ServiceRow
-          label="Frontend"
-          status={frontendStatus.status}
-          port={project.ports.frontend}
-          onStart={handleAction(
-            "frontend",
-            "start",
-            frontendStatus.refresh,
-            () => startServiceV3(project.id, "frontend")
-          )}
-          onStop={handleAction(
-            "frontend",
-            "stop",
-            frontendStatus.refresh,
-            () => stopServiceV3(project.id, "frontend")
-          )}
-          startLoading={loadingService === "frontend-start"}
-          stopLoading={loadingService === "frontend-stop"}
-        />
-        {/* ⚠️ RÈGLE MÉTIER: Tunnel = service backend uniquement */}
-        {/* N'afficher le tunnel que s'il y a un backend */}
-        {project.backendPath && project.backendPath.trim() !== "" && (
-          <ServiceRow
-            label="Tunnel SSH"
-            status={tunnelStatus.status}
-            onStart={handleAction(
-              "tunnel",
-              "start",
-              tunnelStatus.refresh,
-              () => startServiceV3(project.id, "tunnel")
-            )}
-            onStop={handleAction(
-              "tunnel",
-              "stop",
-              tunnelStatus.refresh,
-              () => stopServiceV3(project.id, "tunnel")
-            )}
-            startLoading={loadingService === "tunnel-start"}
-            stopLoading={loadingService === "tunnel-stop"}
-          />
-        )}
-      </div>
-
-      <div className="flex flex-wrap gap-3">
-        <button
-          className="btn px-4 py-2 rounded bg-green-700 text-white flex items-center gap-2 hover:bg-green-600 disabled:opacity-50 disabled:cursor-not-allowed"
-          onClick={handleStartAll}
-          disabled={!isProjectEnabled || startingAll || (
-            (!project.backendPath || project.backendPath.trim() === "" || backendStatus.status === "running") &&
-            frontendStatus.status === "running" &&
-            (!project.backendPath || project.backendPath.trim() === "" || tunnelStatus.status === "running")
-          )}
-          title={!isProjectEnabled ? "Projet inactif - Activez-le d'abord" : "Démarrer automatiquement : Tunnel → Backend → Frontend"}
-        >
-          {startingAll ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Démarrage...
-            </>
-          ) : (
-            "🚀 Démarrer tout"
-          )}
-        </button>
-        
-        {/* Boutons "Ouvrir dans le navigateur" */}
-        {project.frontendPath && project.frontendPath.trim() !== "" && (
-          <button
-            className="btn px-4 py-2 rounded bg-blue-700 text-white flex items-center gap-2 hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed"
-            onClick={handleOpenFrontend}
-            disabled={frontendStatus.status !== "running"}
-            title={`Ouvrir http://localhost:${project.ports.frontend}`}
-          >
-            <Globe className="w-4 h-4" />
-            Ouvrir Frontend
-          </button>
-        )}
-        
-        {project.backendPath && project.backendPath.trim() !== "" && project.backendType && (
-          <button
-            className="btn px-4 py-2 rounded bg-purple-700 text-white flex items-center gap-2 hover:bg-purple-600 disabled:opacity-50 disabled:cursor-not-allowed"
-            onClick={handleOpenBackendAdmin}
-            disabled={backendStatus.status !== "running"}
-            title={`Ouvrir http://localhost:${project.ports.backend}/admin`}
-          >
-            <ExternalLink className="w-4 h-4" />
-            {project.backendType === "payload" ? "Payload Admin" : "Directus Admin"}
-          </button>
-        )}
-        
-        <button className="btn px-4 py-2 rounded bg-gray-800 text-white hover:bg-gray-700">
-          Ouvrir dossier
-        </button>
-        <button className="btn px-4 py-2 rounded bg-gray-800 text-white hover:bg-gray-700">
-          VS Code
-        </button>
-        <button className="btn px-4 py-2 rounded bg-gray-800 text-white hover:bg-gray-700">
-          Logs
-        </button>
-        <button
-          className="btn px-4 py-2 rounded bg-red-700 text-white flex items-center gap-2 hover:bg-red-600"
-          onClick={handleKillZombies}
-          disabled={killing}
-        >
-          {killing ? <Loader2 className="w-4 h-4 animate-spin" /> : "Kill Zombies"}
-        </button>
-      </div>
-    </section>
-  );
-}
-
-function ProjectListSection({
-  projects,
-  active,
-  onSelect,
-  onToggleEnabled,
-}: {
-  projects: ProjectV3[];
-  active: ProjectV3 | null;
-  onSelect: (p: ProjectV3) => void;
-  onToggleEnabled: (project: ProjectV3) => Promise<void>;
-}) {
-  return (
-    <div className="space-y-3">
-      <div className="flex flex-wrap gap-3">
-        {projects.map((project) => (
-          <div key={project.id} className="flex items-center gap-2">
-            <button
-              className={`px-4 py-2 rounded-full border ${
-                active?.id === project.id
-                  ? "border-blue-500 bg-blue-600 text-white"
-                  : "border-gray-600 text-gray-200"
-              }`}
-              onClick={() => onSelect(project)}
-            >
-              {project.name}
-            </button>
-            <button
-              onClick={() => onToggleEnabled(project)}
-              className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
-                project.enabled
-                  ? "bg-green-600 hover:bg-green-700 text-white"
-                  : "bg-gray-700 hover:bg-gray-600 text-gray-300"
-              }`}
-              title={project.enabled ? "Désactiver ce projet" : "Activer ce projet"}
-            >
-              {project.enabled ? "✓ Actif" : "Inactif"}
-            </button>
-          </div>
-        ))}
-      </div>
-      <p className="text-xs text-gray-400">
-        💡 Un seul projet peut être actif à la fois. Activer un projet arrête automatiquement les services des autres projets.
-      </p>
-    </div>
-  );
-}
 
 function Card({ title, value }: { title: string; value: string }) {
   return (
@@ -780,52 +322,4 @@ function Card({ title, value }: { title: string; value: string }) {
   );
 }
 
-function ServiceRow({
-  label,
-  port,
-  onStart,
-  onStop,
-  status,
-  startLoading = false,
-  stopLoading = false,
-}: {
-  label: string;
-  port?: number;
-  status: ServiceState;
-  onStart: () => Promise<void>;
-  onStop: () => Promise<void>;
-  startLoading?: boolean;
-  stopLoading?: boolean;
-}) {
-  const badgeColor =
-    status === "running" ? "bg-green-500 text-white" : "bg-gray-700 text-white";
-
-  return (
-    <div className="flex items-center justify-between rounded-lg border border-gray-700 p-3 bg-gray-900">
-      <div className="flex items-center gap-3">
-        <span className="text-sm font-medium text-white">{label}</span>
-        {port && <span className="text-xs text-gray-400">:{port}</span>}
-        <span className={`px-2 py-0.5 text-xs rounded-full ${badgeColor}`}>
-          {status === "running" ? "RUNNING" : "STOPPED"}
-        </span>
-      </div>
-      <div className="flex gap-2">
-        <button
-          className="px-3 py-1 rounded border border-green-500 text-green-500 text-xs flex items-center justify-center gap-1"
-          onClick={onStart}
-          disabled={startLoading}
-        >
-          {startLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : "Start"}
-        </button>
-        <button
-          className="px-3 py-1 rounded border border-red-500 text-red-500 text-xs flex items-center justify-center gap-1"
-          onClick={onStop}
-          disabled={stopLoading}
-        >
-          {stopLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : "Stop"}
-        </button>
-      </div>
-    </div>
-  );
-}
 
